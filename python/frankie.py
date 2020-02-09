@@ -80,14 +80,147 @@ class DayForecast(object):
 
         return tp/(fn + tp)
 
+def optimize(sdf, idx):
+    day_list = [1, 3, 5, 10]
+
+    for day in day_list:
+        sdf['up'+str(day)+'_period'] = ''
+        sdf['up'+str(day)+'_lags'] = ''
+        sdf['up'+str(day)+'_tpr'] = 0
+
+    lags_list = [ [1, 3],
+                [1, 3, 5],
+                [1, 3, 5, 10],
+                [1, 3, 5, 10, 20],
+                [1, 3, 5, 10, 20, 30],
+                [1, 3, 5, 10, 20, 30, 45],
+                [1, 3, 5, 10, 20, 30, 45],
+                [1, 3, 5, 10, 20, 30, 45, 60]]
+
+    period_list = [ "3y", "5y", "8y", "10y", "15y", "20y"]
+
+
+    for i, ticker in zip(idx, sdf['TICKER'].loc[idx]):
+        name_of_issuer = sdf['NAME_OF_ISSUER'].loc[i]
+        print(f"{i} {ticker} ({name_of_issuer}):"); print("="*(7+len(ticker)+len(name_of_issuer)))
+        print('')
+
+        for day in day_list:
+            print(f'{day}-day forecast:')
+
+            best_lags = None
+            best_period = None
+            best_tp_rate = -1
+
+            for period in period_list:
+                # print('')
+                # print("period:", period)
+                # print('')
+                for lags in lags_list: 
+                    try:
+                        gc.collect()  
+                        myForecast = DayForecast(ticker=ticker, period=period, split_date="2019-07-01", 
+                                                days=day, lags=lags, verbose=False)
+                        tp_rate = myForecast.forecast(horizon=1, verbose=False)
+                        # print('lags=', lags, 'tp_rate=', tp_rate)
+                        if tp_rate > best_tp_rate:
+                            best_period, best_lags, best_tp_rate = period, lags, tp_rate
+                    except:
+                        continue
+
+            print('best_period=', best_period)
+            print('best_tp_rate=', best_tp_rate)
+            print("best_lags=", best_lags)
+            print("")
+
+            sdf.loc[sdf['TICKER'] == ticker, 'up'+str(day)+'_period'] = best_period
+            sdf.loc[sdf['TICKER'] == ticker, 'up'+str(day)+'_lags']   = ','.join(map(str, best_lags))
+            sdf.loc[sdf['TICKER'] == ticker, 'up'+str(day)+'_tpr']    = best_tp_rate
+
+    print('')
+    print('Stocks with optimal settings:')
+    print('=============================')
+    print('')
+    print(sdf.loc[idx])
+
+def baseline(sdf, idx):
+    day_list = [1, 3, 5, 10]
+
+    sdf['naive1_tpr'] = 0
+    sdf['naive3_tpr'] = 0
+    sdf['naive5_tpr'] = 0
+    sdf['naive10_tpr'] = 0
+
+    for i, ticker in zip(idx, sdf['TICKER'].loc[idx]):
+        name_of_issuer = sdf['NAME_OF_ISSUER'].loc[i]
+        print(f"{i} {ticker} ({name_of_issuer}):"); print("="*(7+len(ticker)+len(name_of_issuer)))
+        print('')
+        
+        asset = yf.Ticker(ticker)
+        hist  = asset.history(period="20y")
+        print('period: 20y')
+        for day in day_list:
+            col = "target_"+str(day)+"d"
+            hist[col] = 100*hist.Close.pct_change(day)
+            hist[col] = hist[col].apply(lambda x: 1 if x > 0 else 0)
+            
+            som, lengte = hist[col].sum(), len(hist)
+            naive_tpr = round(som / lengte, 4)
+            
+            print(f"{day}-day forecast naive TPR: {naive_tpr} (={som}/{lengte})")
+        
+        print('')
+        print('period: >= 2019-07-01')
+        hist = hist.loc[hist.index >= '2019-07-01']
+        for day in day_list:
+            col = "target_"+str(day)+"d"
+            som, lengte = hist[col].sum(), len(hist)
+            
+            naive_tpr = round(som / lengte, 4)
+            sdf['naive'+str(day)+"_tpr"].loc[i] = naive_tpr
+            
+            print(f"{day}-day forecast naive TPR: {naive_tpr} (={som}/{lengte})")
+    
+        print('')
 
 def main():
-    myForecast = DayForecast(ticker="MSFT", period="10y", split_date="2019-07-01",
-                             days=5, lags=[1, 3, 5, 10, 20, 30, 45, 60, 90, 120],
-                             verbose=False)
-    tp_rate = myForecast.forecast(horizon=1, verbose=False)
-    print("tp_rate=", tp_rate)
+    PATH = '/Users/frkornet/Flatiron/Stock-Market-Final-Project/'
+    sdf = pd.read_csv(f'{PATH}data/stocks.csv')
+    sdf = sdf.loc[sdf.TICKER > ''].reset_index()
+    if 'index' in sdf.columns:
+        del sdf['index']
+
+    #idx = sdf.sample(10, random_state=42).index
+    idx = sdf.index
+    print(sdf.loc[idx])
+
+    print('')
+    print('OPTIMIZE PARAMS:')
+    print('================')
+    print('')
+    optimize(sdf, idx)
+    print('')
+
+    print('')
+    print('BASELINE TPR:')
+    print('=============')
+    print('')
+    baseline(sdf, idx)
+    print('')
+
+    cols = ['TICKER', 'up1_tpr', 'naive1_tpr', 'up3_tpr', 'naive3_tpr', 
+            'up5_tpr', 'naive5_tpr', 'up10_tpr', 'naive10_tpr']
+    print(sdf[cols].loc[idx])
+    sdf.loc[idx].to_csv(f'{PATH}data/optimal_params.csv')
 
 if __name__ == "__main__":
     # execute only if run as a script
     main()
+
+
+# FRK: old code for testing...
+# myForecast = DayForecast(ticker="MSFT", period="10y", split_date="2019-07-01",
+#                          days=5, lags=[1, 3, 5, 10, 20, 30],
+#                          verbose=False)
+# tp_rate = myForecast.forecast(horizon=1, verbose=False)
+# print("tp_rate=", tp_rate)
