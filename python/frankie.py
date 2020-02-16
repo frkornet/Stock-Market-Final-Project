@@ -8,7 +8,6 @@
 # Version:  0.1
 #
 
-
 from matplotlib import pyplot as plt
 import seaborn as sns; sns.set()
 
@@ -16,11 +15,11 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 
-from pmdarima.datasets import load_msft
-from pmdarima.arima import ADFTest
-from pmdarima import tsdisplay
-from pmdarima import plot_pacf
-from pmdarima import auto_arima
+# from pmdarima.datasets import load_msft
+# from pmdarima.arima import ADFTest
+# from pmdarima import tsdisplay
+# from pmdarima import plot_pacf
+# from pmdarima import auto_arima
 
 from arch import arch_model
 from arch.univariate import ARX, GARCH, StudentsT, Normal
@@ -331,7 +330,10 @@ def optimize(sdf, idx):
             ucol = 'up'+str(day)
             tidx = sdf['TICKER'] == ticker
             sdf.loc[tidx, ucol+'_period'] = best_period[dcol]
-            sdf.loc[tidx, ucol+'_lags']   = ','.join(map(str, best_lags[dcol]))
+            if best_lags[col] == None:
+                sdf.loc[tidx, ucol+'_lags'] = None
+            else:
+                sdf.loc[tidx, ucol+'_lags']   = ','.join(map(str, best_lags[dcol]))
             sdf.loc[tidx, ucol+'_tpr']    = round(best_tp_rate[dcol], 4)
 
     print('')
@@ -461,12 +463,11 @@ def cross_val_tpr(sdf, idx):
 def main():
     DATAPATH = '/Users/frkornet/Flatiron/Stock-Market-Final-Project/data/'
     sdf = pd.read_csv(f'{DATAPATH}stocks.csv')
-    # sdf = sdf.loc[sdf.TICKER > ''].reset_index()
-    sdf = sdf.loc[sdf.TICKER == 'SPPI'].reset_index()
+    sdf = sdf.loc[sdf.TICKER > ''].reset_index()
+    # sdf = sdf.loc[sdf.TICKER == 'SPPI'].reset_index()
     if 'index' in sdf.columns:
         del sdf['index']
 
-    # running out of battery - need stronger charger (in the office)
     idx = sdf.index 
     #idx = sdf.sample(2, random_state=42).index
     print(sdf.loc[idx])
@@ -488,7 +489,7 @@ def main():
     cols = ['TICKER', 'up3_tpr', 'naive3_tpr', 'up5_tpr', 'naive5_tpr', 
             'up8_tpr', 'naive8_tpr', 'up10_tpr', 'naive10_tpr']
     print(sdf[cols].loc[idx])
-    # sdf.loc[idx].to_csv(f'{PATH}optimal_params.csv')
+    sdf.loc[idx].to_csv(f'{DATAPATH}optimal_params.csv')
 
     print('')
     print('CROSS VALIDATION TPR:')
