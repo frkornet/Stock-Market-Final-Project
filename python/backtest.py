@@ -28,6 +28,11 @@ import talib
 import warnings
 warnings.filterwarnings("ignore")
 
+
+# Constants
+BUY  = 1
+SELL = 2
+
 def ticker_stats(ticker, day, verbose):
     period = "10y" # "max"
     asset  = yf.Ticker(ticker)
@@ -286,6 +291,147 @@ def split_data(stock_df, used_cols, target, train_pct):
     y_test  = stock_df[target].iloc[test_starts_at:]
     
     return X, y, X_train, X_test, y_train, y_test
+
+
+def get_signals(hist, target, threshold):
+    # NB: we do not include smooth in data!
+    data = hist[['Close', 'Open', 'Low', 'High']]
+    data = features(data, hist, target)
+
+    used_cols = [c for c in data.columns.tolist() if c not in [target]]
+    X, y, X_train, X_test, y_train, y_test = split_data(data, used_cols, target, 0.7)
+
+    encoder   = WOEEncoder()
+    binner    = KBinsDiscretizer(n_bins=5, encode='ordinal')
+    objectify = FunctionTransformer(func=stringify, check_inverse=False, validate=False)
+    imputer   = SimpleImputer(strategy='constant', fill_value=0.0)
+    clf       = LogisticRegression(class_weight='balanced', random_state=42)
+
+    pipe = make_pipeline(binner, objectify, encoder, imputer, clf)
+    pipe.fit(X_train, y_train.values)
+
+    signals = (pipe.predict_proba(X_test)  > threshold).astype(int)[:,1]
+    return signals
+
+
+def merge_buy_n_sell_signals(buy_signals, sell_signals):
+    
+    assert len(buy_signals) == len(sell_signals), "buy_signal and sell_signal lengths different!"
+    
+    buy_n_sell = [0] * len(buy_signals)
+    length     = len(buy_n_sell)
+    i          = 0
+    state      = SELL
+    
+    while i < length:
+        if state == SELL and buy_signals[i] == 1:
+            state = BUY
+            buy_n_sell[i] = 1
+        
+        elif state == BUY and sell_signals[i] == 1:
+            state = SELL
+            buy_n_sell[i] = 2
+            continue
+        
+        i = i + 1
+    
+    return buy_n_sell
+
+def extract_trades(hist, buy_n_sell, ticker, verbose):
+    test_start_at = len(hist) - len(buy_n_sell)
+    
+    state       = SELL
+    
+    cols = ['buy_date', 'buy_close', 'sell_date', 'sell_close', 'gain_pct',
+            'trading_days', 'daily_return', 'ticker' ]
+    possible_trades_df = pd.DataFrame(columns=cols)
+    
+    for i, b_or_s in enumerate(buy_n_sell):
+        
+        if b_or_s == BUY:
+            buy_id    = test_start_at + i
+            buy_close = hist.Close.iloc[buy_id]
+            buy_date  = hist.index[buy_id]
+            state = SELL
+            
+        if b_or_s == SELL:
+            sell_id    = test_start_at + i
+            sell_close = hist.Close.iloc[sell_id]
+            sell_date  = hist.index[sell_id] 
+            
+            gain = sell_close - buy_close
+            gain_pct = round( (gain / buy_close)*100, 2)
+            
+            trading_days = sell_id - buy_id
+            
+            daily_return = (1+gain_pct/100) ** (1/trading_days) - 1
+            daily_return = round(daily_return * 100, 2)
+            
+            trade_dict = {'buy_date'    : [buy_date],  'buy_close'    : [buy_close],
+                         'sell_date'    : [sell_date], 'sell_close'   : [sell_close],
+                         'gain_pct'     : [gain_pct],  'trading_days' : [trading_days],
+                         'daily_return' : [daily_return], 'ticker' : ticker }
+            possible_trades_df = pd.concat([possible_trades_df, 
+                                           pd.DataFrame(trade_dict)])
+            
+            #$print("buy_id=",  buy_id,  "buy_close=",  buy_close,  "buy_date=", buy_date)
+            #print("sell_id=", sell_id, "sell_close=", sell_close, "sell_date=", sell_date)
+            #print("gain=", gain, f"gain_pct={gain_pct}%")
+            #print("trading_days=", trading_days)
+            #print(f"daily compounded return={daily_return}%")
+            #print('')
+    
+    if verbose == True:
+        print("****EXTRACT_TRADES****")
+        display(possible_trades_df)
+    
+    return possible_trades_df
+
+def get_possible_trades(tickers, threshold, verbose):
+    
+    print("tickers=", tickers)
+    target = 'target'
+    
+    cols = ['buy_date', 'buy_close', 'sell_date', 'sell_close', 'gain_pct',
+        'trading_days', 'daily_return', 'ticker' ]
+    possible_trades_df = pd.DataFrame(columns=cols)
+    
+    for ticker in tickers:
+
+        # free up memory
+        gc.collect()
+
+        if verbose == True:
+            print_ticker_heading(ticker)
+
+        # get stock data and smooth the Close curve
+        hist = ticker_stats(ticker, 3, False)
+        hist = smooth(hist)
+
+        # get the buy signals
+        hist[target] = 0
+        min_ids = argrelmin(hist.smooth.values)[0].tolist()
+        hist[target].iloc[min_ids] = 1        
+        buy_signals = get_signals(hist, target, threshold)
+        #print("buy_signals=", buy_signals, '\n')
+
+        # get the sell signals
+        hist[target] = 0
+        max_ids = argrelmax(hist.smooth.values)[0].tolist()
+        hist[target].iloc[max_ids] = 1
+        sell_signals = get_signals(hist, target, threshold)
+        #print("sell_signals=", sell_signals, '\n')
+        
+        # merge the buy and sell signals
+        buy_n_sell = merge_buy_n_sell_signals(buy_signals, sell_signals)
+        # print("buy_n_sell=", buy_n_sell, '\n')
+        
+        # extract trades
+        ticker_df = extract_trades(hist, buy_n_sell, ticker, verbose)
+        possible_trades_df = pd.concat([possible_trades_df, ticker_df])
+    
+    possible_trades_df.trading_days = possible_trades_df.trading_days.astype(int)
+    return possible_trades_df
 
 if __name__ == "__main__":
     print('Hello world')
