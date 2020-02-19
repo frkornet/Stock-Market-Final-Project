@@ -121,6 +121,8 @@ def balanced_scorecard(data, target, verbose):
         print("mean cross_val_score=", scores.mean(), "std cross_val_score=", scores.std())
         print('\n')
 
+    return pipe, X, y
+
 def determine_minima_n_maxima(tickers, verbose):
     
     print("tickers=", tickers)
@@ -269,6 +271,21 @@ def plot_trades(tickers, min_indices, max_indices):
             plt.show()
     
         print('')
+
+def split_data(stock_df, used_cols, target, train_pct):
+    # set how many rows to discard (from start) and where test starts
+    sacrifice = 0 # 50
+    test_starts_at = int(len(stock_df)*train_pct)
+    
+    X = stock_df[used_cols].iloc[sacrifice:]
+    y = stock_df[target].iloc[sacrifice:]
+
+    X_train = stock_df[used_cols].iloc[sacrifice:test_starts_at]
+    X_test  = stock_df[used_cols].iloc[test_starts_at:]
+    y_train = stock_df[target].iloc[sacrifice:test_starts_at]
+    y_test  = stock_df[target].iloc[test_starts_at:]
+    
+    return X, y, X_train, X_test, y_train, y_test
 
 if __name__ == "__main__":
     print('Hello world')
