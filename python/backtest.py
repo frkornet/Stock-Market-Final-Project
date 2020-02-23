@@ -19,11 +19,14 @@ from sklearn.model_selection import cross_val_score
 from sklearn.impute import SimpleImputer
 
 from scipy.signal import savgol_filter, argrelmin, argrelmax
+from datetime import datetime, timedelta
 
 import math 
 import random
 
 import talib
+
+import tqdm as tqdm
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -67,27 +70,17 @@ def ticker_stats(ticker, day, verbose):
 
 def smooth(hist, ticker):
     window = 15
-    try:
-        hist['smooth'] = savgol_filter(hist.Close, 2*window+1, polyorder=3)
-    except:
-        print(f"first savgol did converge for {ticker}!")
-    
-    try:
-        hist['smooth'] = savgol_filter(hist.smooth, 2*window+1, polyorder=1)
-    except:
-        print(f"second savgol did converge for {ticker}!")
-    
-    try:
-        hist['smooth'] = savgol_filter(hist.smooth, window, polyorder=3)
-    except:
-        print(f"third savgol did converge for {ticker}!")
 
-    try:    
+    try:
+        #print(ticker)
+        hist['smooth'] = savgol_filter(hist.Close, 2*window+1, polyorder=3)
+        hist['smooth'] = savgol_filter(hist.smooth, 2*window+1, polyorder=1)
+        hist['smooth'] = savgol_filter(hist.smooth, window, polyorder=3)   
         hist['smooth'] = savgol_filter(hist.smooth, window, polyorder=1)
+        return True, hist
     except:
-        print(f"fourth savgol did converge for {ticker}!")
-    
-    return hist
+        print(f"Failed to smooth prices for {ticker}!")
+        return False, hist
 
 def features(data, hist, target):
     
@@ -148,9 +141,10 @@ def balanced_scorecard(data, target, verbose):
 
 def determine_minima_n_maxima(tickers, verbose):
     
-    print("tickers=", tickers)
-    min_indexes = []
-    max_indexes = []
+    #print("tickers=", tickers)
+    min_indexes    = []
+    max_indexes    = []
+    failed_tickers = []
 
     for ticker in tickers:
 
@@ -162,7 +156,10 @@ def determine_minima_n_maxima(tickers, verbose):
 
         # get stock data and smooth the Close curve
         hist = ticker_stats(ticker, 3, False)
-        hist = smooth(hist, ticker)
+        success, hist = smooth(hist, ticker)
+        if success == False:
+            failed_tickers.append(ticker)
+            continue
 
         # set target and calculate mean Close
         target = 'target'
@@ -201,7 +198,7 @@ def determine_minima_n_maxima(tickers, verbose):
         if verbose == True:
             balanced_scorecard(data, target, verbose)
         
-    return min_indexes, max_indexes
+    return min_indexes, max_indexes, failed_tickers
 
 
 def align_minima_n_maxima(tickers, min_indices, max_indices, verbose):
@@ -241,7 +238,9 @@ def plot_trades(tickers, min_indices, max_indices):
         print_ticker_heading(ticker)
 
         hist   = ticker_stats(ticker, 3, False)
-        hist   = smooth(hist)
+        success, hist   = smooth(hist)
+        if success == False:
+            continue
         slopes = hist.smooth.diff(1).copy()
 
         for j, buy_id in enumerate(min_indices[i]):
@@ -416,37 +415,41 @@ def get_possible_trades(tickers, threshold, verbose):
     
     for ticker in tickers:
 
-        # free up memory
-        gc.collect()
+        try:
+            # free up memory
+            gc.collect()
 
-        if verbose == True:
-            print_ticker_heading(ticker)
+            if verbose == True:
+                print_ticker_heading(ticker)
 
-        # get stock data and smooth the Close curve
-        hist = ticker_stats(ticker, 3, False)
-        hist = smooth(hist, ticker)
+            # get stock data and smooth the Close curve
+            hist = ticker_stats(ticker, 3, False)
+            success, hist = smooth(hist, ticker)
+            if success == False:
+                continue
 
-        # get the buy signals
-        hist[target] = 0
-        min_ids = argrelmin(hist.smooth.values)[0].tolist()
-        hist[target].iloc[min_ids] = 1        
-        buy_signals = get_signals(hist, target, threshold)
-        #print("buy_signals=", buy_signals, '\n')
+            # get the buy signals
+            hist[target] = 0
+            min_ids = argrelmin(hist.smooth.values)[0].tolist()
+            hist[target].iloc[min_ids] = 1        
+            buy_signals = get_signals(hist, target, threshold)
 
-        # get the sell signals
-        hist[target] = 0
-        max_ids = argrelmax(hist.smooth.values)[0].tolist()
-        hist[target].iloc[max_ids] = 1
-        sell_signals = get_signals(hist, target, threshold)
-        #print("sell_signals=", sell_signals, '\n')
-        
-        # merge the buy and sell signals
-        buy_n_sell = merge_buy_n_sell_signals(buy_signals, sell_signals)
-        # print("buy_n_sell=", buy_n_sell, '\n')
-        
-        # extract trades
-        ticker_df = extract_trades(hist, buy_n_sell, ticker, verbose)
-        possible_trades_df = pd.concat([possible_trades_df, ticker_df])
+            # get the sell signals
+            hist[target] = 0
+            max_ids = argrelmax(hist.smooth.values)[0].tolist()
+            hist[target].iloc[max_ids] = 1
+            sell_signals = get_signals(hist, target, threshold)
+            
+            # merge the buy and sell signals
+            buy_n_sell = merge_buy_n_sell_signals(buy_signals, sell_signals)
+            
+            # extract trades
+            ticker_df = extract_trades(hist, buy_n_sell, ticker, verbose)
+            possible_trades_df = pd.concat([possible_trades_df, ticker_df])
+
+        except:
+            print(f"Failed to get possible trades for {ticker}")
+            continue
     
     possible_trades_df.trading_days = possible_trades_df.trading_days.astype(int)
     return possible_trades_df
@@ -476,7 +479,8 @@ class PnL(object):
     def __init__(self, start_date, end_date, capital, in_use, free, max_stocks):
         
         cols = [ 'date', 'ticker', 'action', 'orig_amount', 'close_amount',
-                 'no_shares', 'daily_gain', 'daily_return', 'invested']
+                 'no_shares', 'stop_loss', 'daily_gain', 'daily_return', 
+                 'invested']
         self.df = pd.DataFrame(columns=cols)
 
         self.myCapital  = Capital()   
@@ -498,11 +502,13 @@ class PnL(object):
         
         # Make sure we have the money to buy stock
         if amount > self.free:
-            if self.free >0:
+            if self.free > 0:
                 amount=self.free
                 print(f"you do not have {amount} and setting amount to {self.free}")
             else:
-                assert 0 == 1, "no money to buy anything!"
+                print(f"you do not have any money left to buy ({self.free})! Not buying...")
+                return
+                #assert 0 == 1, "no money to buy anything!"
 
         # Retrieve the historical data for stock ticker and save it while we're invested
         asset  = yf.Ticker(ticker)
@@ -510,9 +516,11 @@ class PnL(object):
         self.invested[ticker] = hist.copy()
         
         # Get share price and calculate how many shares we can buy
+        # Also, set stop loss share price at 10 %
         idx = self.invested[ticker].index == buy_date
         share_price = float(self.invested[ticker].Close.loc[idx])
         no_shares = amount / share_price
+        stop_loss = share_price * 0.9
         
         # Reduce free and increase in_use by amount
         self.free   = self.free - amount
@@ -526,6 +534,7 @@ class PnL(object):
                     'orig_amount'  : [amount],
                     'close_amount' : [amount],
                     'no_shares'    : [no_shares],
+                    'stop_loss'    : [stop_loss],
                     'daily_gain'   : [0.0],
                     'daily_return' : [0.0],
                     'invested'     : 1
@@ -550,6 +559,7 @@ class PnL(object):
         no_shares     = float(self.df['no_shares'].loc[idx])
         close_amount  = float(self.df['close_amount'].loc[idx])
         orig_amount   = float(self.df['orig_amount'].loc[idx])
+        stop_loss     = float(self.df['stop_loss'].loc[idx])
         self.df.loc[idx, 'invested'] = 0
         
         # Calculate how much the sell will earn
@@ -591,6 +601,7 @@ class PnL(object):
                     'orig_amount'  : [orig_amount],
                     'close_amount' : [today_amount],
                     'no_shares'    : [no_shares],
+                    'stop_loss'    : [stop_loss],
                     'daily_gain'   : [delta_amount],
                     'daily_return' : [delta_pct],
                     'invested'     : 0
@@ -603,16 +614,17 @@ class PnL(object):
         del self.invested[ticker]
         
     def day_close(self, close_date):
-        
+        # print("day_close:")
         tickers = list(self.invested.keys())
         for ticker in tickers:
             
             # Get the latest close_amount for ticker and no_shares owned
             df_idx        = (self.df.ticker == ticker) & (self.df.invested==1)
-            # print("day close:", self.df.loc[df_idx])
+            # print(f"{ticker}:\n", self.df.loc[df_idx])
             no_shares     = float(self.df['no_shares'].loc[df_idx])
             close_amount  = float(self.df['close_amount'].loc[df_idx])
             orig_amount   = float(self.df['orig_amount'].loc[df_idx])
+            stop_loss     = float(self.df['stop_loss'].loc[df_idx])
             self.df.loc[df_idx, 'invested'] = 0
 
             # Calculate how much the sell will earn
@@ -624,12 +636,23 @@ class PnL(object):
 
             # check if we reached a stop loss condition
             gain_pct = ((today_amount - orig_amount) / orig_amount) * 100
-            if gain_pct < STOP_LOSS:
+            if share_price < stop_loss:
                 print(f"breached stop-loss and selling {ticker}...")
                 self.df.loc[df_idx, 'invested'] = 1
                 self.sell_stock(ticker, close_date)
                 continue
 
+            # Report a suspicious high change per stock/day. Threshold for now set at 10%
+            # Allows us to see what other stocks may have issues than just SBT...
+            if abs(delta_amount / self.capital) > 0.1:
+                print('')
+                print('********************')
+                print(f'*** WARNING      *** capital changed by more than 10% for {ticker} on {close_date}!')
+                print(f'***              *** no_shares={no_shares} share_price={share_price} today_amount={today_amount}')
+                print(f'***              *** orig_amount={orig_amount} close_amount={close_amount} delta_amount={delta_amount}')
+                print('********************')
+                print('')
+            
             # Correct in_use and capital for delta_amount
             self.capital  = self.capital + delta_amount
             self.in_use   = self.in_use  + delta_amount
@@ -642,6 +665,7 @@ class PnL(object):
                          'orig_amount'  : [orig_amount],
                          'close_amount' : [today_amount],
                          'no_shares'    : [no_shares],
+                         'stop_loss'    : [stop_loss],
                          'daily_gain'   : [delta_amount],
                          'daily_return' : [delta_pct],
                          'invested'     : 1
@@ -659,15 +683,17 @@ def backtester():
 
     # Read the data
     DATAPATH = '/Users/frkornet/Flatiron/Stock-Market-Final-Project/data/'
-    sdf = pd.read_csv(f'{DATAPATH}optimal_params.csv')
-    idx = (sdf.TICKER > '') & (sdf.TICKER != 'FNMB')
+    sdf = pd.read_csv(f'{DATAPATH}stocks_1000.csv')
+    idx = (sdf.TICKER > '')
     sdf = sdf.loc[idx].reset_index()
     if 'index' in sdf.columns:
         del sdf['index']
 
-
     # Select the stocks we want to backtest
-    exclude_list = ['FNWB', 'AIZ']
+    # NB: stock price for SBT does not make sense, so excluded it
+    exclude_list = ['FNWB', 'AIZ', 'ATO', 'BCC', 'CDNS', 'CNA', 'KIN',
+                    'CTO', 'PAG', 'WELL', 'FTDR', 'QTRHF', 'SWM', 
+                    'SBT', 'MBRX']
     tickers = []
     for ticker in sdf.TICKER.to_list():
         if ticker in exclude_list:
@@ -676,9 +702,18 @@ def backtester():
     print(f"Simulating {len(tickers)} stocks")
 
     # Determine for the selected stocks all possible trades
-    min_indices, max_indices = determine_minima_n_maxima(tickers, False)
-    min_indices, max_indices = align_minima_n_maxima(tickers, min_indices, max_indices, True)
-    possible_trades_df = get_possible_trades(tickers, 0.5, False)
+    min_indices, max_indices, failed_tickers = determine_minima_n_maxima(tickers, False)
+    print("Unable to determine minima and maxima for the following tickers:")
+    print(failed_tickers)
+    remaining_tickers = []
+    for ticker in tickers:
+        if ticker in failed_tickers:
+            continue
+        remaining_tickers.append(ticker)
+    print(f"Simulating now with {len(remaining_tickers)} stocks")
+
+    min_indices, max_indices = align_minima_n_maxima(remaining_tickers, min_indices, max_indices, False)
+    possible_trades_df = get_possible_trades(remaining_tickers, 0.5, False)
 
     # Create a dictionary that stores the mean gain_pct per ticker.
     # This controls whether backtester is willing to invest in the stock
@@ -714,10 +749,9 @@ def backtester():
     sell_dates        = {}
     stocks_owned      = 0
 
-    print("Days to simulate:", len(possible_trades))
+    print("Possible trades to simulate:", len(possible_trades))
 
     for trading_day, trading_date in enumerate(backtest_trading_dates):
-        stocks_owned = len(myPnL.invested)
 
         #
         # Sell stocks if we have reached the sell_date
@@ -726,9 +760,12 @@ def backtester():
             to_sell = sell_dates.pop(trading_date, [])
             for ticker in to_sell:
                 if ticker in myPnL.invested:
+                    print(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)}")
+                    print(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
                     print(f"*** selling {ticker} on {trading_date}")
                     myPnL.sell_stock(ticker, trading_date)
-                    stocks_owned = len(myPnL.invested)
+                    print(f"after selling invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)}")
+                    print(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
 
         #
         # Buy stocks if we have reached the buy_date
@@ -743,13 +780,13 @@ def backtester():
                 # Determine what to do with the possible buy trade
                 #
                 if mean_dict[('gain_pct', 'mean')][ticker] > 0:
-                    print(f"*** buying {ticker} on {buy_date} with target sell date of {sell_date}")
                     amount = myPnL.capital / max_stocks
+                    print(f"*** buying {amount} in {ticker} on {buy_date} with target sell date of {sell_date}")
 
                     # If we reached max_stocks, check if this stock is expected to
                     # perform better then lowest performing invested stock. If that is the case, 
                     # sell lowest expected performing stock, so that we can buy stock
-                    if stocks_owned >= max_stocks:
+                    if len(myPnL.invested) >= max_stocks:
                         expected_gain = mean_dict[('gain_pct', 'mean')][ticker]
 
                         lowest_expected_gain = None 
@@ -763,11 +800,19 @@ def backtester():
                         if lowest_expected_gain is not None and expected_gain > lowest_expected_gain:
                             print(f"*** selling {lowest_ticker} on {trading_date} to free up money for {ticker}")
                             myPnL.sell_stock(lowest_ticker, trading_date)
-                            stocks_owned = len(myPnL.invested)
+                        else:
+                            print(f"maxed out: {ticker} is not expected to perform better than stocks already invested in")
+                            print(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
+                            print('')                   
 
-                    if stocks_owned < max_stocks:
+                    # Only attempt to buy a stock when below max # stocks and 
+                    # we have enough free money to buy at least 25% of stock 
+                    if len(myPnL.invested) < max_stocks and myPnL.free >= amount*0.25:
+                        print(f"enough money ({myPnL.free}) to buy {ticker} (capital={myPnL.capital}")
+                        print(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)}")
                         myPnL.buy_stock(ticker, buy_date, sell_date, amount)
-                        stocks_owned = len(myPnL.invested)
+                        print(f"after buy: invested in {list(myPnL.invested.keys())} ({len(myPnL.invested)}")
+                        print(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
 
                         # save the sell date for future processing
                         if sell_date in sell_dates:
@@ -775,9 +820,10 @@ def backtester():
                         else:
                             sell_dates[sell_date] = [ ticker ]
                     else:
-                        print(f"maxed out: {ticker} is not expected to perform better than stocks already invested in")
-                        print(f"invested in: {myPnL.invested.keys()} ({stocks_owned})")
-                        print('')
+                        print(f"not enough money to buy 25% of stock; not buying")
+                        print(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)}")
+                        print(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
+
 
                 # move to next possible trading opportunity
                 i_possible_trades = i_possible_trades + 1
@@ -791,18 +837,26 @@ def backtester():
         #
         # Post closing of the day
         # 
-        # print(trading_date, stocks_owned, len(myPnL.invested), stocks_owned == len(myPnL.invested))
-        #      myPnL.capital, myPnL.in_use, myPnL.free,
-        #      abs(myPnL.capital - myPnL.in_use - myPnL.free),
-        #      abs(myPnL.capital - myPnL.in_use - myPnL.free) < TOLERANCE)
+        if trading_date >= datetime(2017, 4, 6):
+            print('') # set break here so we can see what is going on...
+
+        cap_before = myPnL.capital
+        print("before day_close:", trading_date, len(myPnL.invested),
+              myPnL.capital, myPnL.in_use, myPnL.free,
+              abs(myPnL.capital - myPnL.in_use - myPnL.free),
+              abs(myPnL.capital - myPnL.in_use - myPnL.free) < TOLERANCE)
         myPnL.day_close(trading_date)
-        
+        print("after day_close:", trading_date, len(myPnL.invested),
+              myPnL.capital, myPnL.in_use, myPnL.free,
+              abs(myPnL.capital - myPnL.in_use - myPnL.free),
+              abs(myPnL.capital - myPnL.in_use - myPnL.free) < TOLERANCE)
+
     print(i_possible_trades, stocks_owned)
-    return myPnL.df, myPnL.myCapital.df
+    return myPnL.df, myPnL.myCapital.df, possible_trades_df
 
 
 if __name__ == "__main__":
-    myPnL_df, myCapital_df = backtester()
+    myPnL_df, myCapital_df, possible_trades_df = backtester()
 
     print(myPnL_df)
     print('')

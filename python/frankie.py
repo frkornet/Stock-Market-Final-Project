@@ -251,7 +251,7 @@ def optimize(sdf, idx):
       in LAG_LIST. As it tries the different combinations, `forecast()` keeps
       track of the best scores so far for each day.
 
-    At the end it prints out for each day the optimal parameters. It also 
+    At the end it prints for each day the optimal parameters. It also 
     updates the stock data frame `sdf` with the optimal parameters and the 
     best achieved TPR. This is stored for each day:
 
