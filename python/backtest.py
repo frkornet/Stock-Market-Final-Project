@@ -679,23 +679,15 @@ class PnL(object):
 
    
 
-def backtester():
-
-    # Read the data
-    DATAPATH = '/Users/frkornet/Flatiron/Stock-Market-Final-Project/data/'
-    sdf = pd.read_csv(f'{DATAPATH}stocks_1000.csv')
-    idx = (sdf.TICKER > '')
-    sdf = sdf.loc[idx].reset_index()
-    if 'index' in sdf.columns:
-        del sdf['index']
+def backtester(requested_tickers):
 
     # Select the stocks we want to backtest
     # NB: stock price for SBT does not make sense, so excluded it
     exclude_list = ['FNWB', 'AIZ', 'ATO', 'BCC', 'CDNS', 'CNA', 'KIN',
                     'CTO', 'PAG', 'WELL', 'FTDR', 'QTRHF', 'SWM', 
-                    'SBT', 'MBRX']
+                    'SBT', 'MBRX', 'LBC']
     tickers = []
-    for ticker in sdf.TICKER.to_list():
+    for ticker in requested_tickers:
         if ticker in exclude_list:
             continue
         tickers.append(ticker)
@@ -856,7 +848,14 @@ def backtester():
 
 
 if __name__ == "__main__":
-    myPnL_df, myCapital_df, possible_trades_df = backtester()
+
+    DATAPATH = '/Users/frkornet/Flatiron/Stock-Market-Final-Project/data/'
+    sdf = pd.read_csv(f'{DATAPATH}stocks_2000.csv')
+    idx = (sdf.TICKER > '')
+    sdf = sdf.loc[idx].reset_index()
+    tickers = sdf.TICKER.to_list()
+
+    myPnL_df, myCapital_df, possible_trades_df = backtester(tickers)
 
     print(myPnL_df)
     print('')
