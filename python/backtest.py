@@ -16,6 +16,8 @@ from   scipy.stats           import t
 import yfinance              as yf
 import matplotlib.pyplot     as plt
 import gc; gc.enable()
+from   tqdm                  import tqdm
+import time
 
 from sklearn.linear_model    import LogisticRegression
 from category_encoders       import WOEEncoder
@@ -66,7 +68,7 @@ def smooth(hist, ticker):
         hist['smooth'] = savgol_filter(hist.smooth, window, polyorder=1)
         return True, hist
     except:
-        print(f"Failed to smooth prices for {ticker}!")
+        #print(f"Failed to smooth prices for {ticker}!")
         return False, hist
 
 def features(data, hist, target):
@@ -178,7 +180,8 @@ def determine_minima_n_maxima(tickers, period, verbose):
     max_indexes    = []
     failed_tickers = []
 
-    for ticker in tickers:
+    #print('Determining local minima and maxima...\n')
+    for ticker in tqdm(tickers, desc="local minima and maxima: "):
 
         # free up memory
         gc.collect()
@@ -535,14 +538,15 @@ def get_possible_trades(tickers, threshold, period, verbose):
     The dataframe with all possible trades is then returned to the caller 
     at the end.
     """
-    print("tickers=", tickers)
+    # print("tickers=", tickers)
     target = 'target'
     
     cols = ['buy_date', 'buy_close', 'sell_date', 'sell_close', 'gain_pct',
             'trading_days', 'daily_return', 'ticker' ]
     possible_trades_df = pd.DataFrame(columns=cols)
     
-    for ticker in tickers:
+    #print('Determining possible trades...\n')
+    for ticker in tqdm(tickers, desc="possible trades: "):
 
         try:
             # free up memory
@@ -624,10 +628,6 @@ class PnL(object):
     the daily gain (positive is gain; negative is loss), daily compounded
     return percentage, and a flag invested.
 
-    TODO: the dataframe needs to be extended with the number of days so far
-    into the trade. This will allow us to determine the average number of 
-    days per trade. 
-
     The flag is used to retrieve the last record for a particular active 
     trade. The class ensures that there is always one record for which 
     invested is 1. It is important to ensure this is the case as otherwise 
@@ -654,7 +654,7 @@ class PnL(object):
     def __init__(self, start_date, end_date, capital, in_use, free, max_stocks):
         
         cols = [ 'date', 'ticker', 'action', 'orig_amount', 'close_amount',
-                 'no_shares', 'stop_loss', 'daily_gain', 'daily_return', 
+                 'no_shares', 'stop_loss', 'daily_gain', 'daily_pct', 
                  'days_in_trade', 'invested']
         self.df = pd.DataFrame(columns=cols)
 
@@ -717,9 +717,9 @@ class PnL(object):
                     'no_shares'    : [no_shares],
                     'stop_loss'    : [stop_loss],
                     'daily_gain'   : [0.0],
-                    'daily_return' : [0.0],
+                    'daily_pct'    : [0.0],
                     'days_in_trade': [0],
-                    'invested'     : 1
+                    'invested'     : [1]
                    }
         
         buy_df = pd.DataFrame(buy_dict)
@@ -793,7 +793,7 @@ class PnL(object):
                     'no_shares'    : [no_shares],
                     'stop_loss'    : [stop_loss],
                     'daily_gain'   : [delta_amount],
-                    'daily_return' : [delta_pct],
+                    'daily_pct'    : [delta_pct],
                     'days_in_trade': [days_in_trade + 1],
                     'invested'     : 0
                    }
@@ -945,14 +945,15 @@ def backtester(requested_tickers, period):
     # Read exclude list
     exclude_df = pd.read_csv(f'{DATAPATH}exclude.csv')
     exclude_list = exclude_df.ticker.to_list()
-    print("exclude_list=", exclude_list)
+    #print("exclude_list=", exclude_list)
 
     tickers = []
     for ticker in requested_tickers:
         if ticker in exclude_list:
             continue
         tickers.append(ticker)
-    print(f"Simulating {len(tickers)} stocks")
+    print(f"Simulating {len(tickers)} stocks\n")
+    time.sleep(1)
 
     # Determine for the selected stocks all possible trades
     min_indices, max_indices, failed_tickers = determine_minima_n_maxima(tickers, period, False)
@@ -963,7 +964,8 @@ def backtester(requested_tickers, period):
         if ticker in failed_tickers:
             continue
         remaining_tickers.append(ticker)
-    print(f"Simulating now with {len(remaining_tickers)} stocks")
+    print(f"Simulating with remaining {len(remaining_tickers)} stocks\n")
+    time.sleep(1)
 
     min_indices, max_indices = align_minima_n_maxima(remaining_tickers, min_indices, max_indices, False)
     possible_trades_df = get_possible_trades(remaining_tickers, 0.5, period, False)
@@ -1001,6 +1003,8 @@ def backtester(requested_tickers, period):
     stocks_owned      = 0
 
     print("Possible trades to simulate:", len(possible_trades))
+    print("Trading days to simulate:  :", len(backtest_trading_dates), "\n")
+    time.sleep(1)
 
     for trading_day, trading_date in enumerate(backtest_trading_dates):
 
@@ -1011,11 +1015,11 @@ def backtester(requested_tickers, period):
             to_sell = sell_dates.pop(trading_date, [])
             for ticker in to_sell:
                 if ticker in myPnL.invested:
-                    print(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)}")
+                    print(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
                     print(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
                     print(f"*** selling {ticker} on {trading_date}")
                     myPnL.sell_stock(ticker, trading_date)
-                    print(f"after selling invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)}")
+                    print(f"after selling invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
                     print(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
 
         #
@@ -1060,7 +1064,7 @@ def backtester(requested_tickers, period):
                     # we have enough free money to buy at least 25% of stock 
                     if len(myPnL.invested) < max_stocks and myPnL.free >= amount*0.25:
                         print(f"enough money ({myPnL.free}) to buy {ticker} (capital={myPnL.capital}")
-                        print(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)}")
+                        print(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
                         myPnL.buy_stock(ticker, buy_date, sell_date, amount)
                         print(f"after buy: invested in {list(myPnL.invested.keys())} ({len(myPnL.invested)}")
                         print(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
@@ -1072,7 +1076,7 @@ def backtester(requested_tickers, period):
                             sell_dates[sell_date] = [ ticker ]
                     else:
                         print(f"not enough money to buy 25% of stock; not buying")
-                        print(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)}")
+                        print(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
                         print(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
 
 
