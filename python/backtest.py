@@ -1,74 +1,61 @@
-import pandas      as pd
-import numpy       as np
-from   frankie     import DayForecast, optimize, baseline, cross_val_tpr
-from   datetime    import date, timedelta
-from   scipy.stats import t
-import yfinance    as yf
-import matplotlib.pyplot as plt
+#
+# Initial version of backtesting module. It allows you to backtest as well as 
+# to get buy and sell recommendations (still to be implemented as part of final
+# project). The backtest_xxx.ipynb notebooks depend on the functionality provided
+# by this module.
+#
+# Author:   Frank Kornet
+# Date:     24 February 2020
+# Version:  0.1
+#
+
+import pandas                as pd
+import numpy                 as np
+from   datetime              import date, timedelta
+from   scipy.stats           import t
+import yfinance              as yf
+import matplotlib.pyplot     as plt
 import gc; gc.enable()
 
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, balanced_accuracy_score, roc_auc_score
-from sklearn.datasets import load_breast_cancer, load_iris, make_moons, make_circles, make_classification
-from sklearn.linear_model import LogisticRegression
-from category_encoders import WOEEncoder
+from sklearn.linear_model    import LogisticRegression
+from category_encoders       import WOEEncoder
 
 from sklearn.model_selection import train_test_split
-from sklearn.pipeline import make_pipeline, Pipeline
-from sklearn.preprocessing import MinMaxScaler, KBinsDiscretizer, FunctionTransformer
+from sklearn.pipeline        import make_pipeline, Pipeline
+from sklearn.preprocessing   import KBinsDiscretizer, FunctionTransformer
 from sklearn.model_selection import cross_val_score
-from sklearn.impute import SimpleImputer
+from sklearn.impute          import SimpleImputer
 
-from scipy.signal import savgol_filter, argrelmin, argrelmax
-from datetime import datetime, timedelta
-
-import math 
-import random
-
-import talib
-
-import tqdm as tqdm
+from scipy.signal            import savgol_filter, argrelmin, argrelmax
+from datetime                import datetime, timedelta
 
 import warnings
 warnings.filterwarnings("ignore")
 
-
 # Constants
-BUY  = 1
-SELL = 2
+BUY       = 1
+SELL      = 2
 TOLERANCE = 1e-6
 STOP_LOSS = -10 # max loss: -10%
+DATAPATH  = '/Users/frkornet/Flatiron/Stock-Market-Final-Project/data/'
 
-def ticker_stats(ticker, day, verbose):
-    period = "10y" # "max"
+def get_hist(ticker, period):
+    """
+    Retrieve historical stock date from yfinance and return data to caller.
+    """
     asset  = yf.Ticker(ticker)
     hist   = asset.history(period=period)
-    col = f'perc_change{day}'
-    hist[col] = 100*hist.Close.pct_change(day).shift(-day)
-    
-    idx = hist[col] <= 0
-    neg_count = hist.loc[idx].count()[0]
-    pos_count = hist.loc[~idx].count()[0]
-    tot_count = len(hist)
-    
-    if verbose == True:
-        print("TICKER:", ticker)
-        print("="*(8+len(ticker)))
-        print('')
-        print('neg_count=', neg_count, f'neg_count %={neg_count}/{tot_count} = {neg_count/tot_count}')
-        print('pos_count=', pos_count, f'pos_count %={pos_count}/{tot_count} = {pos_count/tot_count}')
-        print('')
-        print(hist[col].describe())
-        print('')
-        print(hist[col].tail(10))
-        print('')
-        hist[col].plot(figsize=(20,8))
-        plt.title(ticker+f" ({day} day % change)")
-        plt.show()
-        print('')
     
     return hist
 
 def smooth(hist, ticker):
+    """
+    Smooth the Close price curve of hist data frame returned by yfinance. Two
+    values are returned. The first is whether or not the smooth was successful 
+    (True is successful and False is unsuccessful). The second value is the
+    hist dataframe with an extra column smooth containing the smoothed Close
+    curve.
+    """
     window = 15
 
     try:
@@ -83,7 +70,16 @@ def smooth(hist, ticker):
         return False, hist
 
 def features(data, hist, target):
+    """
+    Given a standard yfinance data dataframe, add features that will help
+    the balanced scorecard to recognize buy and sell signals in the data.
+    The features are added as columns in the data dataframe. 
     
+    The original hist dataframe from yfinance is provided, so we can copy
+    the target to the data dataframe. The data dataframe with the extra 
+    features is returned. The target argument contains the name of the 
+    column that contains the the target.
+    """
     windows = [3, 5, 10, 15, 20, 30, 45, 60]
 
     for i in windows:
@@ -104,18 +100,38 @@ def features(data, hist, target):
     return data
 
 def stringify(data):
+    """
+    Convert a Pandas dataframe with numeric columns into a dataframe with only
+    columns of the data type string (in Pandas terminology an object). The 
+    modified dataframe is returned. Note that the original dataframe is lost.
+    """
     df = pd.DataFrame(data)
     for c in df.columns.tolist():
         df[c] = df[c].astype(str)
     return df
 
 def print_ticker_heading(ticker):
+    """
+    Print a heading for the ticker on the console. Nothing is returned. Is
+    a helper function only to avoid having to duplicate the same code over
+    and over again. 
+    """
     print("*******************")
     print("***", ticker, " "*6, "***" )
     print("*******************")
     print('')
 
 def balanced_scorecard(data, target, verbose):
+    """
+    Create a balanced weight of evidence scorecard. The scorecard is put into
+    a sklearn pipeline, and then cross validated. The scores are printed if
+    verbose is set to True. Otherwise the scores are not printed.
+
+    The balanced scorecard returns the pipe, as well as the X (features) and
+    y (target) values. Note that these are no longer Pandas dataframe columns.
+    Instead they are numpy series.
+    """
+
     # Pipeline for weighted evidence balanced scorecard
     encoder   = WOEEncoder()
     binner    = KBinsDiscretizer(n_bins=5, encode='ordinal')
@@ -139,7 +155,23 @@ def balanced_scorecard(data, target, verbose):
 
     return pipe, X, y
 
-def determine_minima_n_maxima(tickers, verbose):
+
+def determine_minima_n_maxima(tickers, period, verbose):
+    """
+    For a list of tickers determine their local minima and local maxima. 
+    The function loops through the tickers and does the following:
+    (1) retrieve the stock data for the ticker,
+    (2) smooth the Close price curve,
+    (3) use argrelmin and argrelmax to determine the local minima and ]
+        maxima of the smoothed curve, and
+    (4) if verbose is True, a target column is created with 1 for local 
+        minima and -1 for local maxima and then the Close price curve,
+        the smoothed curve and the target are plotted.
+
+    The function returns the local minima indices, the local maxima 
+    indices, and a list of tickers for which we are unable to smooth
+    the Close price curve.
+    """
     
     #print("tickers=", tickers)
     min_indexes    = []
@@ -155,7 +187,7 @@ def determine_minima_n_maxima(tickers, verbose):
             print_ticker_heading(ticker)
 
         # get stock data and smooth the Close curve
-        hist = ticker_stats(ticker, 3, False)
+        hist = get_hist(ticker, period)
         success, hist = smooth(hist, ticker)
         if success == False:
             failed_tickers.append(ticker)
@@ -178,31 +210,39 @@ def determine_minima_n_maxima(tickers, verbose):
             print("max_ids=", max_ids)
         max_indexes.append(max_ids)
 
-        # set the local minima to onbe and local maxima to minus one
-        hist[target].iloc[min_ids] = 1
-        hist[target].iloc[max_ids] = -1
-
         # plot the Close and smooth curve and the buy and sell signals 
         if verbose == True:
+
+            hist[target].iloc[min_ids] = 1
+            hist[target].iloc[max_ids] = -1
+
             plt.figure(figsize=(20,8))
             hist.Close.plot()
             hist.smooth.plot()
             (hist[target]*(mean_close/4)).plot()
             plt.title(ticker)
             plt.show()
-
-        # NB: we do not include smooth in data!
-        data = hist[['Close', 'Open', 'Low', 'High']]
-        data = features(data, hist, target)
-
-        if verbose == True:
-            balanced_scorecard(data, target, verbose)
         
     return min_indexes, max_indexes, failed_tickers
 
 
 def align_minima_n_maxima(tickers, min_indices, max_indices, verbose):
-    
+    """
+    For each ticker ensure that the index of the first buy (in min_indices) 
+    is larger than the first sell (in max_indices), since the backtester 
+    cannot sell what it has not yet bought. 
+
+    The sell actions at the beginning (i.e. the first entries 
+    from max_indices) are dropped until the first buy comes before any 
+    sell action.
+
+    Note that min_indices[i] contains the list of local minima indices
+    for ticker i, and max_indices[i] contains the list of local maxima
+    indices for ticker i.
+
+    The function returns min_indices, max_indices where max_indices has 
+    potentially been changed.
+    """
     for i, ticker in enumerate(tickers):
         
         if len(min_indices[i]) == 0 or len(max_indices[i]) == 0:
@@ -229,15 +269,30 @@ def align_minima_n_maxima(tickers, min_indices, max_indices, verbose):
     return min_indices, max_indices
 
 
-def plot_trades(tickers, min_indices, max_indices):
-    
+def plot_trades(tickers, min_indices, max_indices, period):
+    """
+    For a list of tickers, local minima, and local maxima determine the 
+    gain/loss of each individual trade. Note that the local minima
+    and local maxima are based upon the smoothed curve. The profit/gain
+    is based upon the actual Close price. So, there may be some
+    discrepencies. The function is mainly used to visualize the trades 
+    and is mostly used in testing settings.
+
+    The function draws for each trade a plot, with a red dot indicating 
+    the starting point of the trade on the Close price curve, and a
+    second red dot indicating the sell of the stock ticker.
+
+    Note this function is only practical for small number of trades. 
+    Even a similation of 100 stocks easily gets a few hundred 
+    executed trades over a 3 year period.
+    """
+
     for i, ticker in enumerate(tickers):
     
         gc.collect()
-
         print_ticker_heading(ticker)
 
-        hist   = ticker_stats(ticker, 3, False)
+        hist   = get_hist(ticker, period)
         success, hist   = smooth(hist)
         if success == False:
             continue
@@ -295,6 +350,19 @@ def plot_trades(tickers, min_indices, max_indices):
         print('')
 
 def split_data(stock_df, used_cols, target, train_pct):
+    """
+    Split data set into a training and test data set:
+    - X contains the features for training and predicting. 
+    - y contains the target for training and evaluating the performance.
+
+    Used_cols contain the features (i.e. columns) that yiu want to use
+    for training and prediction. Target contains the name of the column
+    that is the target.
+
+    Function returns X and y for cross validation, X and y for training, 
+    and X and y for testing.
+    """
+
     # set how many rows to discard (from start) and where test starts
     sacrifice = 0 # 50
     test_starts_at = int(len(stock_df)*train_pct)
@@ -311,6 +379,22 @@ def split_data(stock_df, used_cols, target, train_pct):
 
 
 def get_signals(hist, target, threshold):
+    """
+    Used to predict buy and sell signals. The function itself has no awareness
+    what it is predicting. It is just a helper function used by 
+    get_possible_trades().
+
+    Target is the column that contains the target. The other columns are
+    considered to be features to be used for training and prection.
+
+    The function uses a balanced weight of evidence scorecard to predict the 
+    signals. It returns the signals array.
+
+    Note that the function uses 70% for training and 30% for testing. The 
+    date where the split happens is dependent on how much data the hist
+    dataframe contains. So, the caller will not see a single split date for
+    all tickers. 
+    """
     # NB: we do not include smooth in data!
     data = hist[['Close', 'Open', 'Low', 'High']]
     data = features(data, hist, target)
@@ -332,7 +416,22 @@ def get_signals(hist, target, threshold):
 
 
 def merge_buy_n_sell_signals(buy_signals, sell_signals):
-    
+    """
+    The functions will take two lists and produce a single containing the 
+    buy and sell signals. The merged list will start with always buy signal.
+    This is achieved by setting the state to SELL. That ensures that all sell 
+    signals are quietly dropped until we get to the first buy signal.
+
+    Note: this function does not enforce that each buy signal is matched with  
+    a sell signal.
+
+    The function implements a simple deterministic state machine that flips 
+    from SELL to BUY and back from BUY to SELL.
+
+    A buy in the merged list is 1 and a sell is 2. The merged list is
+    returned to the caller at the end.
+    """
+
     assert len(buy_signals) == len(sell_signals), "buy_signal and sell_signal lengths different!"
     
     buy_n_sell = [0] * len(buy_signals)
@@ -355,9 +454,32 @@ def merge_buy_n_sell_signals(buy_signals, sell_signals):
     return buy_n_sell
 
 def extract_trades(hist, buy_n_sell, ticker, verbose):
-    test_start_at = len(hist) - len(buy_n_sell)
+    """
+    Given a merged buy and sell list, extract all complete buy and sell pairs 
+    and store each pair as a trade in a dataframe (i.e. possible_trades_df). 
     
-    state       = SELL
+    The possible trades dataframe contains the ticker, buy date, sell date, 
+    the close price at buy date, the cloe price at sell data, the gain 
+    percentage, and the daily compounded return.
+
+    Note that hist, contains the data from yfinance for the ticker, so we
+    can calculate the above values to be stored in the possible trades
+    dataframe.
+
+    The function returns the possible trades dataframe to the caller.
+    The possible trades for a single ticker.
+
+    The function assumes that the buy_n_sell list is well formed and does 
+    not carry out any checks. Since the list is typiclly created by 
+    merge_buy_n_sell_signals(), this should be the case.
+
+    TODO: extend the functionality so that the buy at the end without 
+    a matching signal is storted in an open position dataframe. The caller
+    is then responsible for merging all open position of all tickers into 
+    a single dataframe.  
+    """
+
+    test_start_at = len(hist) - len(buy_n_sell)
     
     cols = ['buy_date', 'buy_close', 'sell_date', 'sell_close', 'gain_pct',
             'trading_days', 'daily_return', 'ticker' ]
@@ -369,7 +491,6 @@ def extract_trades(hist, buy_n_sell, ticker, verbose):
             buy_id    = test_start_at + i
             buy_close = hist.Close.iloc[buy_id]
             buy_date  = hist.index[buy_id]
-            state = SELL
             
         if b_or_s == SELL:
             sell_id    = test_start_at + i
@@ -387,16 +508,9 @@ def extract_trades(hist, buy_n_sell, ticker, verbose):
             trade_dict = {'buy_date'    : [buy_date],  'buy_close'    : [buy_close],
                          'sell_date'    : [sell_date], 'sell_close'   : [sell_close],
                          'gain_pct'     : [gain_pct],  'trading_days' : [trading_days],
-                         'daily_return' : [daily_return], 'ticker' : ticker }
+                         'daily_return' : [daily_return], 'ticker'    : [ticker] }
             possible_trades_df = pd.concat([possible_trades_df, 
                                            pd.DataFrame(trade_dict)])
-            
-            #$print("buy_id=",  buy_id,  "buy_close=",  buy_close,  "buy_date=", buy_date)
-            #print("sell_id=", sell_id, "sell_close=", sell_close, "sell_date=", sell_date)
-            #print("gain=", gain, f"gain_pct={gain_pct}%")
-            #print("trading_days=", trading_days)
-            #print(f"daily compounded return={daily_return}%")
-            #print('')
     
     if verbose == True:
         print("****EXTRACT_TRADES****")
@@ -404,13 +518,28 @@ def extract_trades(hist, buy_n_sell, ticker, verbose):
     
     return possible_trades_df
 
-def get_possible_trades(tickers, threshold, verbose):
-    
+def get_possible_trades(tickers, threshold, period, verbose):
+    """
+    The main driver that calls other functions to do the work with the aim
+    of extracting all possible trades for all tickers. For each ticker it
+    performs the following steps:
+
+    1) retrieve the historical ticker information (using yfinance),
+    2) smooth the Close price curve,
+    3) get the buy signals (using balanced scorecard),
+    4) get the sell signals (using balanced scorecard),
+    5) merge the buy and sell signals, and
+    6) extract the possible trades and add that to the overall dataframe
+       containing all possible trades for all tickers.
+
+    The dataframe with all possible trades is then returned to the caller 
+    at the end.
+    """
     print("tickers=", tickers)
     target = 'target'
     
     cols = ['buy_date', 'buy_close', 'sell_date', 'sell_close', 'gain_pct',
-        'trading_days', 'daily_return', 'ticker' ]
+            'trading_days', 'daily_return', 'ticker' ]
     possible_trades_df = pd.DataFrame(columns=cols)
     
     for ticker in tickers:
@@ -423,7 +552,7 @@ def get_possible_trades(tickers, threshold, verbose):
                 print_ticker_heading(ticker)
 
             # get stock data and smooth the Close curve
-            hist = ticker_stats(ticker, 3, False)
+            hist = get_hist(ticker, period)
             success, hist = smooth(hist, ticker)
             if success == False:
                 continue
@@ -454,7 +583,16 @@ def get_possible_trades(tickers, threshold, verbose):
     possible_trades_df.trading_days = possible_trades_df.trading_days.astype(int)
     return possible_trades_df
 
+
 class Capital(object):
+    """
+    A simple class to record the growth of decline of capital, in_use, and 
+    free after each trading day. The data is stored in a dataframe with
+    four columns: date, capital, in_use, and free. The method day_close()
+    is used to store the capital, in_use, and free after closing the day.
+
+    This class is used by PnL class whgich is the real workhorse. 
+    """
     def __init__(self):
         cols = [ 'date', 'capital', 'in_use', 'free']
         self.df = pd.DataFrame(columns=cols)
@@ -476,11 +614,48 @@ class Capital(object):
         self.df = pd.concat( [self.df, pd.DataFrame(close_dict)] )
 
 class PnL(object):
+    """
+    The PnL class keeps track of all the buys, sells, and day closes. 
+    The class keeps track of things via a dataframe. The dataframe consists 
+    of the following columns: date, ticker, action (BUY, SELL, or CLOSE), 
+    original amount invested in the stock, close amount at the end of the 
+    trading day, number of shares owned, the stop loss price undert which we 
+    will sell the stock (typically 90% of the starting share price),
+    the daily gain (positive is gain; negative is loss), daily compounded
+    return percentage, and a flag invested.
+
+    TODO: the dataframe needs to be extended with the number of days so far
+    into the trade. This will allow us to determine the average number of 
+    days per trade. 
+
+    The flag is used to retrieve the last record for a particular active 
+    trade. The class ensures that there is always one record for which 
+    invested is 1. It is important to ensure this is the case as otherwise 
+    the code will not work.
+
+    The class consists of three methods:
+
+    - buy_stock() : buy a specified amount of a particular stock on buy date
+                    with a planned sell date
+    - sell_stock(): sell a stock on a specific sell date
+    - day_close() : for each open ticker investment update the value of the
+                    position. If the share price droipped below stop loss,
+                    carry out a forced sell of stock. After that
+                    record the day end capital, in_use, and free.
+    
+    The class enforces that no more than max_stocks are owned. max_stocks is 
+    set at initialization. It also enforces, that capital = in_use + free. 
+    Since these are floats, the code use the following trick to ensure they 
+    are basically the same: abs(capital - in_use - free) < TOLERANCE where
+    TOLERANCE is 1E-6 (i.e. close to zero).
+
+    """
+
     def __init__(self, start_date, end_date, capital, in_use, free, max_stocks):
         
         cols = [ 'date', 'ticker', 'action', 'orig_amount', 'close_amount',
                  'no_shares', 'stop_loss', 'daily_gain', 'daily_return', 
-                 'invested']
+                 'days_in_trade', 'invested']
         self.df = pd.DataFrame(columns=cols)
 
         self.myCapital  = Capital()   
@@ -493,11 +668,18 @@ class PnL(object):
         self.max_stocks = max_stocks
         
     def buy_stock (self, ticker, buy_date, sell_date, amount):
+        """
+        Buy a stock on a specifid day and store it in the actual trades dataframe (i.e. df).
+        
+        The active investments are recorded in the invested dictionary. The historical
+        stock data is stored in invested[ticker].
+
+        Returns nothing.
+        """
         
         assert amount > 0,                      f"amount ({amount}) needs to be greater than zero!"
         assert ticker not in self.invested,     f"already own shares in {ticker}!"
         assert len(self.invested) < self.max_stocks, f"already own maximum # stocks ({self.max_stocks})!"
-        #assert self.free >= amount,             f"you do not have enough free cash to buy ({self.free})!"
         assert abs(self.capital - self.in_use - self.free) < TOLERANCE, "capital and in_use + free deviating too much!"
         
         # Make sure we have the money to buy stock
@@ -508,7 +690,6 @@ class PnL(object):
             else:
                 print(f"you do not have any money left to buy ({self.free})! Not buying...")
                 return
-                #assert 0 == 1, "no money to buy anything!"
 
         # Retrieve the historical data for stock ticker and save it while we're invested
         asset  = yf.Ticker(ticker)
@@ -537,6 +718,7 @@ class PnL(object):
                     'stop_loss'    : [stop_loss],
                     'daily_gain'   : [0.0],
                     'daily_return' : [0.0],
+                    'days_in_trade': [0],
                     'invested'     : 1
                    }
         
@@ -544,11 +726,18 @@ class PnL(object):
         self.df = pd.concat([self.df, buy_df])
      
     def sell_stock (self, ticker, sell_date):
-        
+        """
+        Sell stock on specified date. Also, remove the ticker from invested after
+        the position has been closed. 
+
+        Returns nothing.
+        """
+
         assert self.capital >= 0, "capital needs to be zero or greater"
         assert self.in_use  >= 0, "in_use needs to be zero or greater"
         assert self.free    >= 0, "free needs to be zero or greater"        
-        assert abs(self.capital - self.in_use - self.free) < TOLERANCE, "capital and in_use + free deviating too much!"
+        assert abs(self.capital - self.in_use - self.free) < TOLERANCE, \
+               "capital and in_use + free deviating too much!"
 
         # Return if we do not own the stock (may be due to a forced stop-loss sales)
         if ticker not in self.invested:
@@ -560,6 +749,7 @@ class PnL(object):
         close_amount  = float(self.df['close_amount'].loc[idx])
         orig_amount   = float(self.df['orig_amount'].loc[idx])
         stop_loss     = float(self.df['stop_loss'].loc[idx])
+        days_in_trade = int(self.df['days_in_trade'].loc[idx])
         self.df.loc[idx, 'invested'] = 0
         
         # Calculate how much the sell will earn
@@ -604,6 +794,7 @@ class PnL(object):
                     'stop_loss'    : [stop_loss],
                     'daily_gain'   : [delta_amount],
                     'daily_return' : [delta_pct],
+                    'days_in_trade': [days_in_trade + 1],
                     'invested'     : 0
                    }
         
@@ -614,6 +805,18 @@ class PnL(object):
         del self.invested[ticker]
         
     def day_close(self, close_date):
+        """
+        Day end close. Updates the value of the stocks actively invested in and
+        updates the variables capital, in_use, and free. After the value of each
+        position has been updated, store capital, in_use, and free.
+
+        It also has a safety net to print a warning if the value of an open 
+        position changes by more than ten percent. This is put in place as 
+        occasionally the data returned by yfinance is incorrect. This will alert
+        us that this may be happening. 
+
+        Returns nothing.
+        """
         # print("day_close:")
         tickers = list(self.invested.keys())
         for ticker in tickers:
@@ -625,6 +828,7 @@ class PnL(object):
             close_amount  = float(self.df['close_amount'].loc[df_idx])
             orig_amount   = float(self.df['orig_amount'].loc[df_idx])
             stop_loss     = float(self.df['stop_loss'].loc[df_idx])
+            days_in_trade = int(self.df['days_in_trade'].loc[df_idx])
             self.df.loc[df_idx, 'invested'] = 0
 
             # Calculate how much the sell will earn
@@ -656,8 +860,8 @@ class PnL(object):
             # Correct in_use and capital for delta_amount
             self.capital  = self.capital + delta_amount
             self.in_use   = self.in_use  + delta_amount
-            assert abs(self.capital - self.in_use - self.free) < TOLERANCE, "capital and in_use + free deviating too much!"
-
+            assert abs(self.capital - self.in_use - self.free) < TOLERANCE, \
+                   "capital and in_use + free deviating too much!"
 
             close_dict = {'date'         : [close_date],
                          'ticker'       : [ticker],
@@ -668,6 +872,7 @@ class PnL(object):
                          'stop_loss'    : [stop_loss],
                          'daily_gain'   : [delta_amount],
                          'daily_return' : [delta_pct],
+                         'days_in_trade': [days_in_trade + 1],
                          'invested'     : 1
                    }
         
@@ -679,13 +884,69 @@ class PnL(object):
 
    
 
-def backtester(requested_tickers):
+def backtester(requested_tickers, period):
+    """
+    The backtester() that will determine for the requested tickers:
+    1) build a list of remaining tickers that exclude the tickers
+       on the exclude list
+    2) for the remaining tickers, determine for the specified period 
+       the possible trades. Note that the possible trades only cover
+       the period of the test data
+    3) determine the average expected gain per ticker (this will be used 
+       to determine whether the stock we want to buy is a better 
+       investment opportunity than any of the stocks currently invested in)
+    4) determine the start date and end date of backtesting period. Note 
+       that we subtract 5 days from the start date and add 5 days to the 
+       end date to allow things to settle
+    5) create a PnL instance and initialize it with a capital of $10k 
+       and set free to $10k and in_use to $0k. The max_stocks are currently 
+       set to five stocks.
+    6) sort the possible trades by buy_date and gain_pct. That way we ensure 
+       that the possible trades are processed in the correct order. It also 
+       makes the main loop simpler
+    7) Now loop through all possible trades and carry out the buy and sells.
+       The loop is complicated. The outer loop goes through all the trading 
+       days and does the following:
 
-    # Select the stocks we want to backtest
-    # NB: stock price for SBT does not make sense, so excluded it
-    exclude_list = ['FNWB', 'AIZ', 'ATO', 'BCC', 'CDNS', 'CNA', 'KIN',
-                    'CTO', 'PAG', 'WELL', 'FTDR', 'QTRHF', 'SWM', 
-                    'SBT', 'MBRX', 'LBC']
+       7.1) check if there are any stocks that need to be sold on this 
+            trading day. The dictionary sell_dates contains the planned 
+            sell dates for tickers. Sell all the stocks that need to be sold
+            on this day. Note that sell_dates contains a list of tickers to
+            be sold on a specific day.
+
+       7.2) then check if there are any stocks to buy on this day. If there are
+            do the following:
+            - make sure that the stock to buy does have a positive expected
+              gain
+            - if we have reached the maximum number of stocks (which is the 
+              vast majority of the time), check if the expected gain of the 
+              "worst" performing stock is less than the expected gain of the
+              stock we are intending to buy. If this is the case, then sell
+              the "worst" performing stock to create space for the new to 
+              buy stock
+            - check that we have not reached the maximum number of stocks 
+              and that we have enough cash (variable free) to buy at least
+              25% of the amount we want to buy. Note amount is calculated as 
+              capital divided by maximum number of stock. If we meet the
+              above criteria then we will buy the stock and record the 
+              planned sell date in sell_dates dictionary.
+
+            Note the above is done for all possible trades on a particular 
+            trading day.
+
+       7.3) call day_close() method to value all open positions and to
+            record results at the end of the trading day (i.e. capital, 
+            in_use, and free).
+
+    The function returns the PnL dataframe, Capital dataframe, and 
+    possible trades dataframe. These can then be used for further analysis.
+    """
+
+    # Read exclude list
+    exclude_df = pd.read_csv(f'{DATAPATH}exclude.csv')
+    exclude_list = exclude_df.ticker.to_list()
+    print("exclude_list=", exclude_list)
+
     tickers = []
     for ticker in requested_tickers:
         if ticker in exclude_list:
@@ -694,7 +955,7 @@ def backtester(requested_tickers):
     print(f"Simulating {len(tickers)} stocks")
 
     # Determine for the selected stocks all possible trades
-    min_indices, max_indices, failed_tickers = determine_minima_n_maxima(tickers, False)
+    min_indices, max_indices, failed_tickers = determine_minima_n_maxima(tickers, period, False)
     print("Unable to determine minima and maxima for the following tickers:")
     print(failed_tickers)
     remaining_tickers = []
@@ -705,7 +966,7 @@ def backtester(requested_tickers):
     print(f"Simulating now with {len(remaining_tickers)} stocks")
 
     min_indices, max_indices = align_minima_n_maxima(remaining_tickers, min_indices, max_indices, False)
-    possible_trades_df = get_possible_trades(remaining_tickers, 0.5, False)
+    possible_trades_df = get_possible_trades(remaining_tickers, 0.5, period, False)
 
     # Create a dictionary that stores the mean gain_pct per ticker.
     # This controls whether backtester is willing to invest in the stock
@@ -717,20 +978,18 @@ def backtester(requested_tickers):
     start_date = start_date - timedelta(5)
     end_date = end_date + timedelta(5)
 
-    # Pull down MSFT stock for period and use that as basis for deteriming
+    # Pull down MSFT stock for period and use that as basis for determining
     # the stock market trading days
     asset = yf.Ticker('MSFT')
     hist  = asset.history(period="max")
     idx = (hist.index >= start_date) & (hist.index <= end_date)
     backtest_trading_dates = hist.loc[idx].index.to_list()
-    #print(backtest_trading_dates[0], backtest_trading_dates[-1])
 
     # Initialize the key variable
     capital           = 10000
     free              = 10000
     in_use            = 0
     max_stocks        = 5
-    myCapital         = Capital()
     myPnL             = PnL(start_date, end_date, capital, in_use, free, max_stocks)
 
     # Sort the possible trades so they are processed in order
@@ -829,8 +1088,6 @@ def backtester(requested_tickers):
         #
         # Post closing of the day
         # 
-        if trading_date >= datetime(2017, 4, 6):
-            print('') # set break here so we can see what is going on...
 
         cap_before = myPnL.capital
         print("before day_close:", trading_date, len(myPnL.invested),
@@ -844,18 +1101,18 @@ def backtester(requested_tickers):
               abs(myPnL.capital - myPnL.in_use - myPnL.free) < TOLERANCE)
 
     print(i_possible_trades, stocks_owned)
+    myPnL.df.days_in_trade = myPnL.df.days_in_trade.astype(int)
     return myPnL.df, myPnL.myCapital.df, possible_trades_df
 
 
 if __name__ == "__main__":
 
-    DATAPATH = '/Users/frkornet/Flatiron/Stock-Market-Final-Project/data/'
     sdf = pd.read_csv(f'{DATAPATH}stocks_2000.csv')
     idx = (sdf.TICKER > '')
     sdf = sdf.loc[idx].reset_index()
     tickers = sdf.TICKER.to_list()
 
-    myPnL_df, myCapital_df, possible_trades_df = backtester(tickers)
+    myPnL_df, myCapital_df, possible_trades_df = backtester(tickers, "10y")
 
     print(myPnL_df)
     print('')
