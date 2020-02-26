@@ -18,6 +18,7 @@ import matplotlib.pyplot     as plt
 import gc; gc.enable()
 from   tqdm                  import tqdm
 import time
+import logging
 
 from sklearn.linear_model    import LogisticRegression
 from category_encoders       import WOEEncoder
@@ -40,6 +41,12 @@ SELL      = 2
 TOLERANCE = 1e-6
 STOP_LOSS = -10 # max loss: -10%
 DATAPATH  = '/Users/frkornet/Flatiron/Stock-Market-Final-Project/data/'
+LOGPATH   = '/Users/frkornet/Flatiron/Stock-Market-Final-Project/log/'
+
+def log(msg, both=False):
+    logging.info(msg)
+    if both == True:
+        print(msg)
 
 def get_hist(ticker, period):
     """
@@ -686,9 +693,9 @@ class PnL(object):
         if amount > self.free:
             if self.free > 0:
                 amount=self.free
-                print(f"you do not have {amount} and setting amount to {self.free}")
+                log(f"you do not have {amount} and setting amount to {self.free}")
             else:
-                print(f"you do not have any money left to buy ({self.free})! Not buying...")
+                log(f"you do not have any money left to buy ({self.free})! Not buying...")
                 return
 
         # Retrieve the historical data for stock ticker and save it while we're invested
@@ -760,8 +767,8 @@ class PnL(object):
         delta_pct     = (delta_amount / close_amount) * 100
 
         # print the profit/loss of the trade
-        print(f"profit of selling {ticker} on {sell_date}: ",
-              f"{today_amount - orig_amount}", 
+        log(f"profit of selling {ticker} on {sell_date}: "
+              f"{today_amount - orig_amount}"
               f"{round(((today_amount - orig_amount)/orig_amount)*100,2)}%")
         
         # Correct in_use and capital for delta_amount
@@ -777,10 +784,10 @@ class PnL(object):
         self.free     = self.free   + today_amount
 
         if abs(self.capital - self.in_use - self.free) > TOLERANCE:
-            print("self.capital=", self.capital)
-            print("self.in_use=", self.in_use)
-            print("self.free=", self.free)
-            print("diff=", abs(self.capital - self.in_use - self.free))
+            log("self.capital=", self.capital)
+            log("self.in_use=", self.in_use)
+            log("self.free=", self.free)
+            log("diff=", abs(self.capital - self.in_use - self.free))
             assert abs(self.capital - self.in_use - self.free) < TOLERANCE, \
                    "capital and in_use + free deviating too much!"
         
@@ -823,7 +830,7 @@ class PnL(object):
             
             # Get the latest close_amount for ticker and no_shares owned
             df_idx        = (self.df.ticker == ticker) & (self.df.invested==1)
-            # print(f"{ticker}:\n", self.df.loc[df_idx])
+            log(f"{ticker}:\n {self.df.loc[df_idx]}")
             no_shares     = float(self.df['no_shares'].loc[df_idx])
             close_amount  = float(self.df['close_amount'].loc[df_idx])
             orig_amount   = float(self.df['orig_amount'].loc[df_idx])
@@ -841,7 +848,7 @@ class PnL(object):
             # check if we reached a stop loss condition
             gain_pct = ((today_amount - orig_amount) / orig_amount) * 100
             if share_price < stop_loss:
-                print(f"breached stop-loss and selling {ticker}...")
+                log(f"breached stop-loss and selling {ticker}...")
                 self.df.loc[df_idx, 'invested'] = 1
                 self.sell_stock(ticker, close_date)
                 continue
@@ -849,13 +856,13 @@ class PnL(object):
             # Report a suspicious high change per stock/day. Threshold for now set at 10%
             # Allows us to see what other stocks may have issues than just SBT...
             if abs(delta_amount / self.capital) > 0.1:
-                print('')
-                print('********************')
-                print(f'*** WARNING      *** capital changed by more than 10% for {ticker} on {close_date}!')
-                print(f'***              *** no_shares={no_shares} share_price={share_price} today_amount={today_amount}')
-                print(f'***              *** orig_amount={orig_amount} close_amount={close_amount} delta_amount={delta_amount}')
-                print('********************')
-                print('')
+                log('', True)
+                log('********************', True)
+                log(f'*** WARNING      *** capital changed by more than 10% for {ticker} on {close_date}!', True)
+                log(f'***              *** no_shares={no_shares} share_price={share_price} today_amount={today_amount}', True)
+                log(f'***              *** orig_amount={orig_amount} close_amount={close_amount} delta_amount={delta_amount}', True)
+                log('********************', True)
+                log('', True)
             
             # Correct in_use and capital for delta_amount
             self.capital  = self.capital + delta_amount
@@ -871,7 +878,7 @@ class PnL(object):
                          'no_shares'    : [no_shares],
                          'stop_loss'    : [stop_loss],
                          'daily_gain'   : [delta_amount],
-                         'daily_return' : [delta_pct],
+                         'daily_pct'    : [delta_pct],
                          'days_in_trade': [days_in_trade + 1],
                          'invested'     : 1
                    }
@@ -884,7 +891,7 @@ class PnL(object):
 
    
 
-def backtester(requested_tickers, period):
+def backtester(log_fnm, requested_tickers, period, capital, max_stocks):
     """
     The backtester() that will determine for the requested tickers:
     1) build a list of remaining tickers that exclude the tickers
@@ -942,29 +949,38 @@ def backtester(requested_tickers, period):
     possible trades dataframe. These can then be used for further analysis.
     """
 
+    # create log file and write call information out
+    logging.basicConfig(filename=f'{LOGPATH}{log_fnm}', 
+                        format='%(asctime)s %(message)s', 
+                        level=logging.DEBUG)
+    log(f"backtester() started: log_fnm={log_fnm}"
+        f" period={period} capital={capital} max_stocks={max_stocks}")
+    log(f"requested_tickers={requested_tickers}\n\n")
+
     # Read exclude list
     exclude_df = pd.read_csv(f'{DATAPATH}exclude.csv')
     exclude_list = exclude_df.ticker.to_list()
-    #print("exclude_list=", exclude_list)
+    log(f"exclude_list={exclude_list}\n")
 
     tickers = []
     for ticker in requested_tickers:
         if ticker in exclude_list:
             continue
         tickers.append(ticker)
-    print(f"Simulating {len(tickers)} stocks\n")
+    log(f"Simulating {len(tickers)} stocks\n", True)
     time.sleep(1)
 
     # Determine for the selected stocks all possible trades
     min_indices, max_indices, failed_tickers = determine_minima_n_maxima(tickers, period, False)
-    print("Unable to determine minima and maxima for the following tickers:")
-    print(failed_tickers)
+    log('', True)
+    log("Unable to determine local minima and maxima for the following tickers:", True)
+    log(failed_tickers, True)
     remaining_tickers = []
     for ticker in tickers:
         if ticker in failed_tickers:
             continue
         remaining_tickers.append(ticker)
-    print(f"Simulating with remaining {len(remaining_tickers)} stocks\n")
+    log(f"Simulating with remaining {len(remaining_tickers)} stocks\n", True)
     time.sleep(1)
 
     min_indices, max_indices = align_minima_n_maxima(remaining_tickers, min_indices, max_indices, False)
@@ -988,10 +1004,8 @@ def backtester(requested_tickers, period):
     backtest_trading_dates = hist.loc[idx].index.to_list()
 
     # Initialize the key variable
-    capital           = 10000
-    free              = 10000
+    free              = capital
     in_use            = 0
-    max_stocks        = 5
     myPnL             = PnL(start_date, end_date, capital, in_use, free, max_stocks)
 
     # Sort the possible trades so they are processed in order
@@ -1002,11 +1016,12 @@ def backtester(requested_tickers, period):
     sell_dates        = {}
     stocks_owned      = 0
 
-    print("Possible trades to simulate:", len(possible_trades))
-    print("Trading days to simulate:  :", len(backtest_trading_dates), "\n")
+    log('', True)
+    log(f"Possible trades to simulate: {len(possible_trades)}", True)
+    log(f"Trading days to simulate   : {len(backtest_trading_dates)}\n", True)
     time.sleep(1)
 
-    for trading_day, trading_date in enumerate(backtest_trading_dates):
+    for trading_day, trading_date in enumerate(tqdm(backtest_trading_dates, desc="simulate trades: ")):
 
         #
         # Sell stocks if we have reached the sell_date
@@ -1015,12 +1030,12 @@ def backtester(requested_tickers, period):
             to_sell = sell_dates.pop(trading_date, [])
             for ticker in to_sell:
                 if ticker in myPnL.invested:
-                    print(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
-                    print(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
-                    print(f"*** selling {ticker} on {trading_date}")
+                    log(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
+                    log(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
+                    log(f"*** selling {ticker} on {trading_date}")
                     myPnL.sell_stock(ticker, trading_date)
-                    print(f"after selling invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
-                    print(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
+                    log(f"after selling invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
+                    log(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
 
         #
         # Buy stocks if we have reached the buy_date
@@ -1036,7 +1051,7 @@ def backtester(requested_tickers, period):
                 #
                 if mean_dict[('gain_pct', 'mean')][ticker] > 0:
                     amount = myPnL.capital / max_stocks
-                    print(f"*** buying {amount} in {ticker} on {buy_date} with target sell date of {sell_date}")
+                    log(f"*** buying {amount} in {ticker} on {buy_date} with target sell date of {sell_date}")
 
                     # If we reached max_stocks, check if this stock is expected to
                     # perform better then lowest performing invested stock. If that is the case, 
@@ -1053,21 +1068,21 @@ def backtester(requested_tickers, period):
                                 lowest_ticker        = t
                         
                         if lowest_expected_gain is not None and expected_gain > lowest_expected_gain:
-                            print(f"*** selling {lowest_ticker} on {trading_date} to free up money for {ticker}")
+                            log(f"*** selling {lowest_ticker} on {trading_date} to free up money for {ticker}")
                             myPnL.sell_stock(lowest_ticker, trading_date)
                         else:
-                            print(f"maxed out: {ticker} is not expected to perform better than stocks already invested in")
-                            print(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
-                            print('')                   
+                            log(f"maxed out: {ticker} is not expected to perform better than stocks already invested in")
+                            log(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
+                            log('')                   
 
                     # Only attempt to buy a stock when below max # stocks and 
                     # we have enough free money to buy at least 25% of stock 
                     if len(myPnL.invested) < max_stocks and myPnL.free >= amount*0.25:
-                        print(f"enough money ({myPnL.free}) to buy {ticker} (capital={myPnL.capital}")
-                        print(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
+                        log(f"enough money ({myPnL.free}) to buy {ticker} (capital={myPnL.capital}")
+                        log(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
                         myPnL.buy_stock(ticker, buy_date, sell_date, amount)
-                        print(f"after buy: invested in {list(myPnL.invested.keys())} ({len(myPnL.invested)}")
-                        print(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
+                        log(f"after buy: invested in {list(myPnL.invested.keys())} ({len(myPnL.invested)}")
+                        log(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
 
                         # save the sell date for future processing
                         if sell_date in sell_dates:
@@ -1075,10 +1090,9 @@ def backtester(requested_tickers, period):
                         else:
                             sell_dates[sell_date] = [ ticker ]
                     else:
-                        print(f"not enough money to buy 25% of stock; not buying")
-                        print(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
-                        print(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
-
+                        log(f"not enough money to buy 25% of stock; not buying")
+                        log(f"invested in: {list(myPnL.invested.keys())} ({len(myPnL.invested)})")
+                        log(f"capital={myPnL.capital} in_use={myPnL.in_use} free={myPnL.free}")
 
                 # move to next possible trading opportunity
                 i_possible_trades = i_possible_trades + 1
@@ -1094,17 +1108,17 @@ def backtester(requested_tickers, period):
         # 
 
         cap_before = myPnL.capital
-        print("before day_close:", trading_date, len(myPnL.invested),
-              myPnL.capital, myPnL.in_use, myPnL.free,
-              abs(myPnL.capital - myPnL.in_use - myPnL.free),
-              abs(myPnL.capital - myPnL.in_use - myPnL.free) < TOLERANCE)
+        log(f"before day_close: {trading_date} {len(myPnL.invested)} "
+            f"{round(myPnL.capital,2)} {round(myPnL.in_use,2)} {round(myPnL.free,2)} "
+            f"{round(abs(myPnL.capital - myPnL.in_use - myPnL.free),6)} "
+            f"{abs(myPnL.capital - myPnL.in_use - myPnL.free) < TOLERANCE}")
         myPnL.day_close(trading_date)
-        print("after day_close:", trading_date, len(myPnL.invested),
-              myPnL.capital, myPnL.in_use, myPnL.free,
-              abs(myPnL.capital - myPnL.in_use - myPnL.free),
-              abs(myPnL.capital - myPnL.in_use - myPnL.free) < TOLERANCE)
+        log(f"after day_close: {trading_date} {len(myPnL.invested)} "
+            f"{round(myPnL.capital,2)} {round(myPnL.in_use,2)} {round(myPnL.free,2)} "
+            f"{round(abs(myPnL.capital - myPnL.in_use - myPnL.free),6)} "
+            f"{abs(myPnL.capital - myPnL.in_use - myPnL.free) < TOLERANCE}")
 
-    print(i_possible_trades, stocks_owned)
+    log(f"i_possible_trades={i_possible_trades} stocks_owned={stocks_owned}")
     myPnL.df.days_in_trade = myPnL.df.days_in_trade.astype(int)
     return myPnL.df, myPnL.myCapital.df, possible_trades_df
 
@@ -1116,7 +1130,8 @@ if __name__ == "__main__":
     sdf = sdf.loc[idx].reset_index()
     tickers = sdf.TICKER.to_list()
 
-    myPnL_df, myCapital_df, possible_trades_df = backtester(tickers, "10y")
+    log_fnm = 'backtest_2000.log'
+    myPnL_df, myCapital_df, possible_trades_df = backtester(log_fnm, tickers, "10y", 10000, 5)
 
     print(myPnL_df)
     print('')
