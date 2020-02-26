@@ -164,6 +164,35 @@ def balanced_scorecard(data, target, verbose):
 
     return pipe, X, y
 
+def check_min_index(min_index, hist):
+    """
+    """
+    assert min_index >= 0 and min_index < len(hist), "index out of bound!"
+
+    while min_index < len(hist)-1:
+        next_close    = hist.Close.iloc[min_index + 1]
+        current_close = hist.Close.iloc[min_index]
+        up_tomorrow = next_close > current_close
+        if up_tomorrow == True:
+            return min_index
+        min_index = min_index + 1
+    
+    return min_index
+
+def check_max_index(max_index, hist):
+    """
+    """
+    assert max_index >= 0 and max_index < len(hist), "index out of bound!"
+
+    while max_index < len(hist)-1 and max_index > 0:
+        next_close    = hist.Close.iloc[max_index + 1]
+        current_close = hist.Close.iloc[max_index]
+        down_tomorrow = next_close < current_close
+        if down_tomorrow == True:
+            return max_index
+        max_index = max_index + 1
+    
+    return max_index
 
 def determine_minima_n_maxima(tickers, period, verbose):
     """
@@ -212,13 +241,27 @@ def determine_minima_n_maxima(tickers, period, verbose):
         min_ids = argrelmin(hist.smooth.values)[0].tolist()
         if verbose == True:
             print("min_ids=", min_ids)
-        min_indexes.append(min_ids)
+
+        # Make sure that the next day stock is not going down further
+        checked_min_ids = []
+        for min_index in min_ids:
+            updated_index = check_min_index(min_index, hist)
+            checked_min_ids.append(updated_index)
+
+        min_indexes.append(checked_min_ids)
 
         # identify the maxima and save a copy of the data for later processing
         max_ids = argrelmax(hist.smooth.values)[0].tolist()
         if verbose == True:
             print("max_ids=", max_ids)
-        max_indexes.append(max_ids)
+
+        # Make sure that the next day stock is not going up further
+        checked_max_ids = []
+        for max_index in max_ids:
+            updated_index = check_max_index(max_index, hist)
+            checked_max_ids.append(updated_index)
+
+        max_indexes.append(checked_max_ids)
 
         # plot the Close and smooth curve and the buy and sell signals 
         if verbose == True:
