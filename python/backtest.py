@@ -495,6 +495,8 @@ def extract_trades(hist, buy_n_sell, ticker, verbose):
             'trading_days', 'daily_return', 'ticker' ]
     possible_trades_df = pd.DataFrame(columns=cols)
     
+    buy_id = -1
+
     for i, b_or_s in enumerate(buy_n_sell):
         
         if b_or_s == BUY:
@@ -523,10 +525,21 @@ def extract_trades(hist, buy_n_sell, ticker, verbose):
                                            pd.DataFrame(trade_dict)])
     
     if verbose == True:
-        print("****EXTRACT_TRADES****")
-        print(possible_trades_df)
+        log("****EXTRACT_TRADES****")
+        log(possible_trades_df)
     
-    return possible_trades_df
+    if buy_id > 0:
+        buy_opportunity_df = {'ticker'    : [ticker] , 
+                              'buy_date'  : [buy_date],  
+                              'buy_close' : [buy_close],
+                             }
+        buy_opportunity_df = pd.DataFrame(buy_opportunity_df)
+    else:
+        cols=['ticker', 'buy_date', 'buy_close']
+        buy_opportunity_df = pd.DataFrame(columns=cols)
+
+    return possible_trades_df, buy_opportunity_df
+
 
 def get_possible_trades(tickers, threshold, period, verbose):
     """
@@ -551,6 +564,9 @@ def get_possible_trades(tickers, threshold, period, verbose):
     cols = ['buy_date', 'buy_close', 'sell_date', 'sell_close', 'gain_pct',
             'trading_days', 'daily_return', 'ticker' ]
     possible_trades_df = pd.DataFrame(columns=cols)
+
+    cols=['ticker', 'buy_date', 'buy_close']
+    buy_opportunities_df = pd.DataFrame(columns=cols)
     
     #print('Determining possible trades...\n')
     for ticker in tqdm(tickers, desc="possible trades: "):
@@ -584,15 +600,16 @@ def get_possible_trades(tickers, threshold, period, verbose):
             buy_n_sell = merge_buy_n_sell_signals(buy_signals, sell_signals)
             
             # extract trades
-            ticker_df = extract_trades(hist, buy_n_sell, ticker, verbose)
+            ticker_df, buy_df = extract_trades(hist, buy_n_sell, ticker, verbose)
             possible_trades_df = pd.concat([possible_trades_df, ticker_df])
+            buy_opportunities_df = pd.concat([buy_opportunities_df, buy_df])
 
         except:
             print(f"Failed to get possible trades for {ticker}")
             continue
     
     possible_trades_df.trading_days = possible_trades_df.trading_days.astype(int)
-    return possible_trades_df
+    return possible_trades_df, buy_opportunities_df
 
 
 class Capital(object):
@@ -984,12 +1001,15 @@ def backtester(log_fnm, requested_tickers, period, capital, max_stocks):
     time.sleep(1)
 
     min_indices, max_indices = align_minima_n_maxima(remaining_tickers, min_indices, max_indices, False)
-    possible_trades_df = get_possible_trades(remaining_tickers, 0.5, period, False)
+    possible_trades_df, buy_opportunities_df = get_possible_trades(remaining_tickers, 0.5, period, False)
 
     # Create a dictionary that stores the mean gain_pct per ticker.
     # This controls whether backtester is willing to invest in the stock
     cols = ['ticker', 'trading_days', 'gain_pct', 'daily_return']
     mean_dict = possible_trades_df[cols].groupby('ticker').agg(['mean']).to_dict()
+    mean_df = possible_trades_df[cols].groupby('ticker').agg(['mean']).reset_index()
+    mean_df.columns=['ticker', 'trading_days', 'gain_pct', 'daily_return']
+    buy_opportunities_df = pd.merge(buy_opportunities_df, mean_df, how='inner')
 
     # Determine start and end date for backtesting period.
     start_date, end_date = min(possible_trades_df.buy_date), max(possible_trades_df.sell_date)
@@ -1120,18 +1140,39 @@ def backtester(log_fnm, requested_tickers, period, capital, max_stocks):
 
     log(f"i_possible_trades={i_possible_trades} stocks_owned={stocks_owned}")
     myPnL.df.days_in_trade = myPnL.df.days_in_trade.astype(int)
-    return myPnL.df, myPnL.myCapital.df, possible_trades_df
+
+    # Get today's and yesterday's date
+    today = datetime.today()
+    yesterday = today - timedelta(1)
+    today, yesterday = today.strftime('%Y-%m-%d'), yesterday.strftime('%Y-%m-%d')
+
+
+    log('', True)
+    log("Today's buying recommendations:\n", True)
+    idx = (buy_opportunities_df.buy_date == today) & (buy_opportunities_df.gain_pct > 0)
+    df = buy_opportunities_df.loc[idx].sort_values(by='daily_return', ascending=False)[0:max_stocks]
+    log(df, True)
+    log('', True)
+
+    log('', True)
+    log("Yesterday's buying recommendations:\n", True)
+    idx = (buy_opportunities_df.buy_date == yesterday) & (buy_opportunities_df.gain_pct > 0)
+    df = buy_opportunities_df.loc[idx].sort_values(by='daily_return', ascending=False)[0:max_stocks]
+    log(df, True)
+    log('', True)
+
+    return myPnL.df, myPnL.myCapital.df, possible_trades_df, buy_opportunities_df
 
 
 if __name__ == "__main__":
 
-    sdf = pd.read_csv(f'{DATAPATH}stocks_2000.csv')
+    sdf = pd.read_csv(f'{DATAPATH}stocks_100.csv')
     idx = (sdf.TICKER > '')
     sdf = sdf.loc[idx].reset_index()
     tickers = sdf.TICKER.to_list()
 
     log_fnm = 'backtest_2000.log'
-    myPnL_df, myCapital_df, possible_trades_df = backtester(log_fnm, tickers, "10y", 10000, 5)
+    myPnL_df, myCapital_df, possible_trades_df, buy_opportunities_df = backtester(log_fnm, tickers, "10y", 10000, 5)
 
     print(myPnL_df)
     print('')
