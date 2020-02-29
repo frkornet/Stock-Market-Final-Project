@@ -1,4 +1,6 @@
 #
+# Stockie - Stock Trading System
+#
 # Initial version of backtesting module. It allows you to backtest as well as 
 # to get buy and sell recommendations (still to be implemented as part of final
 # project). The backtest_xxx.ipynb notebooks depend on the functionality provided
@@ -1015,9 +1017,9 @@ def backtester(log_fnm, requested_tickers, period, capital, max_stocks):
                         level=logging.DEBUG)
     log(f"backtester() started: log_fnm={log_fnm}"
         f" period={period} capital={capital} max_stocks={max_stocks}")
-    log(f"requested_tickers={requested_tickers}\n\n")
+    log(f"Requested_tickers={requested_tickers}\n\n")
 
-    # Read exclude list
+    # Read exclude list (bad Close price curves and not able to smooth)
     exclude_df = pd.read_csv(f'{DATAPATH}exclude.csv')
     exclude_list = exclude_df.ticker.to_list()
     log(f"exclude_list={exclude_list}\n")
@@ -1027,7 +1029,21 @@ def backtester(log_fnm, requested_tickers, period, capital, max_stocks):
         if ticker in exclude_list:
             continue
         tickers.append(ticker)
-    log(f"Simulating {len(tickers)} stocks\n", True)
+    log(f"After aplying exclude list {len(tickers)} stocks left\n", True)
+
+    # Read ticker_stats list and apply "good" filter
+    ticker_stats_df = pd.read_csv(f'{DATAPATH}ticker_stats.csv')
+    good_tickers = ticker_stats_df.loc[ticker_stats_df.good == 1].ticker.to_list()
+    log(f"good_tickers={good_tickers}\n")
+
+    possible_tickers = tickers
+    tickers = []
+    for t in possible_tickers:
+        if t in good_tickers:
+            tickers.append(t)
+
+    log(f"After applying good tickers filter {len(tickers)} stocks left for simulation\n", True)
+    log(f'tickers={tickers} for simulation')
     time.sleep(1)
 
     # Determine for the selected stocks all possible trades
@@ -1209,7 +1225,7 @@ def backtester(log_fnm, requested_tickers, period, capital, max_stocks):
 
 if __name__ == "__main__":
 
-    sdf = pd.read_csv(f'{DATAPATH}stocks_100.csv')
+    sdf = pd.read_csv(f'{DATAPATH}stocks_1000.csv')
     idx = (sdf.TICKER > '')
     sdf = sdf.loc[idx].reset_index()
     tickers = sdf.TICKER.to_list()
