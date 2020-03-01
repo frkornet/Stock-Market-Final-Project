@@ -1089,7 +1089,9 @@ def backtester(log_fnm, requested_tickers, period, capital, max_stocks):
 
     # Sort the possible trades so they are processed in order
     i_possible_trades = 0
-    possible_trades   = possible_trades_df.sort_values(by=['buy_date', 'gain_pct'], ascending=[True, False])
+    ret_col = 'gain_daily_ret' # 'daily_ret'
+    possible_trades_df = pd.merge(possible_trades_df, ticker_stats_df[['ticker', ret_col]], how='inner')
+    possible_trades   = possible_trades_df.sort_values(by=['buy_date', ret_col], ascending=[True, False])
     possible_trades   = possible_trades.reset_index()
 
     sell_dates        = {}
@@ -1098,6 +1100,7 @@ def backtester(log_fnm, requested_tickers, period, capital, max_stocks):
     log('', True)
     log(f"Possible trades to simulate: {len(possible_trades)}", True)
     log(f"Trading days to simulate   : {len(backtest_trading_dates)}\n", True)
+    
     time.sleep(1)
 
     for trading_day, trading_date in enumerate(tqdm(backtest_trading_dates, desc="simulate trades: ")):
@@ -1128,7 +1131,9 @@ def backtester(log_fnm, requested_tickers, period, capital, max_stocks):
                 #
                 # Determine what to do with the possible buy trade
                 #
-                if mean_dict[('gain_pct', 'mean')][ticker] > 0:
+                # if mean_dict[('gain_pct', 'mean')][ticker] > 0:
+                daily_ret = float(ticker_stats_df[ret_col].loc[ticker_stats_df.ticker == ticker])
+                if daily_ret > 0:
                     amount = myPnL.capital / max_stocks
                     log(f"*** buying {amount} in {ticker} on {buy_date} with target sell date of {sell_date}")
 
@@ -1136,14 +1141,24 @@ def backtester(log_fnm, requested_tickers, period, capital, max_stocks):
                     # perform better then lowest performing invested stock. If that is the case, 
                     # sell lowest expected performing stock, so that we can buy stock
                     if len(myPnL.invested) >= max_stocks:
-                        expected_gain = mean_dict[('gain_pct', 'mean')][ticker]
+                        idx = ticker_stats_df.ticker == ticker
+                        total_days = float(ticker_stats_df.total_days.loc[idx])
+                        total_cnt  = float(ticker_stats_df.total_cnt.loc[idx])
+                        expected_days = total_days / total_cnt
+                        expected_gain = (1 + (daily_ret/100)) ** expected_days - 1
 
                         lowest_expected_gain = None 
                         lowest_ticker        = None
                         for t in myPnL.invested.keys():
-                            t_gain = mean_dict[('gain_pct', 'mean')][t]
-                            if lowest_expected_gain is None or t_gain < lowest_expected_gain:
-                                lowest_expected_gain = t_gain
+                            tidx = ticker_stats_df.ticker == t
+                            t_total_days = float(ticker_stats_df.total_days.loc[tidx])
+                            t_total_cnt  = float(ticker_stats_df.total_cnt.loc[tidx])
+                            t_expected_days = total_days / total_cnt
+                            t_daily_ret = float(ticker_stats_df[ret_col].loc[tidx])
+                            t_expected_gain = (1 + (t_daily_ret/100)) ** t_expected_days - 1                          
+
+                            if lowest_expected_gain is None or t_expected_gain < lowest_expected_gain:
+                                lowest_expected_gain = t_expected_gain
                                 lowest_ticker        = t
                         
                         if lowest_expected_gain is not None and expected_gain > lowest_expected_gain:
@@ -1205,19 +1220,22 @@ def backtester(log_fnm, requested_tickers, period, capital, max_stocks):
     yesterday = today - timedelta(1)
     today, yesterday = today.strftime('%Y-%m-%d'), yesterday.strftime('%Y-%m-%d')
 
+    buy_opportunities_df = pd.merge(buy_opportunities_df, ticker_stats_df, how='inner')
 
     log('', True)
     log("Today's buying recommendations:\n", True)
-    idx = (buy_opportunities_df.buy_date == today) & (buy_opportunities_df.gain_pct > 0)
-    df = buy_opportunities_df.loc[idx].sort_values(by='daily_return', ascending=False)[0:max_stocks]
-    log(df, True)
+    idx = (buy_opportunities_df.buy_date == today) #& (buy_opportunities_df.gain_pct > 0)
+    df = buy_opportunities_df.loc[idx].sort_values(by=ret_col, ascending=False)[0:max_stocks]
+    cols = ['ticker', 'buy_date', 'daily_ret', 'gain_ratio', 'e_gain_daily_ret', 'e_loss_daily_ret',
+            'day_gain', 'day_loss', 'day_zero']
+    log(df[cols], True)
     log('', True)
 
     log('', True)
     log("Yesterday's buying recommendations:\n", True)
     idx = (buy_opportunities_df.buy_date == yesterday) & (buy_opportunities_df.gain_pct > 0)
-    df = buy_opportunities_df.loc[idx].sort_values(by='daily_return', ascending=False)[0:max_stocks]
-    log(df, True)
+    df = buy_opportunities_df.loc[idx].sort_values(by='daily_ret', ascending=False)[0:max_stocks]
+    log(df[cols], True)
     log('', True)
 
     return myPnL.df, myPnL.myCapital.df, possible_trades_df, buy_opportunities_df
@@ -1225,7 +1243,7 @@ def backtester(log_fnm, requested_tickers, period, capital, max_stocks):
 
 if __name__ == "__main__":
 
-    sdf = pd.read_csv(f'{DATAPATH}stocks_1000.csv')
+    sdf = pd.read_csv(f'{DATAPATH}stocks_2000.csv')
     idx = (sdf.TICKER > '')
     sdf = sdf.loc[idx].reset_index()
     tickers = sdf.TICKER.to_list()
